@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package cs739;
+
+service SendFile {
+  rpc Send(stream Data) returns(Reply) {}
+}
+
+message Data {
+  bytes b = 1;
+}
+
+message Reply {
+  uint64 r = 1; // size
+  string md5sum = 2; // checksum
+}
