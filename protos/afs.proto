@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package cs739;
+
+service AFS {
+  rpc GetAttr(Filepath) returns(Meta);
+  rpc GetContent(Filepath) returns(stream MetaContent);
+  rpc Write(stream FilepathContent) returns(Meta);
+  rpc Stat(Filepath) returns(StatContent);
+  rpc Unlink(Filepath) returns(Response);
+  rpc Rmdir(Filepath) returns(Response);
+  rpc Mkdir(Filepath) returns(Response);
+}
+
+message Filepath {
+  string filepath = 1;
+}
+
+message Meta {
+  bool file_exists = 1;
+  uint64 timestamp = 2;
+  // I think we don't need inode
+  // probably need more info?
+}
+
+message FilepathContent {
+  string filepath = 1; // for a Write() call, filepath should always be same
+  bytes b = 2;
+}
+
+message MetaContent {
+  bool file_exists = 1;
+  uint64 timestamp = 2; // for a single GetContent() call, file_exists and timestamp should remain the same.
+  bytes b = 3;
+}
+
+message StatContent {
+  int32 return_code = 1;
+  int32 error_number = 2;
+  bytes struct_stat = 3;
+}
+
+message Response {
+  int32 return_code = 1;
+  int32 error_number = 2;
+}
