@@ -10,6 +10,7 @@ endif()
 # set(CMAKE_CXX_FLAGS "-Wall -Wextra")
 set(CMAKE_CXX_FLAGS_DEBUG "-O -g")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+set(CMAKE_CXX_FLAGS "-D_FILE_OFFSET_BITS=64")
 
 # https://github.com/IvanSafonov/grpc-cmake-example/blob/master/CMakeLists.txt
 
