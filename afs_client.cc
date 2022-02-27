@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <unordered_map>
 #include <unistd.h>
 #include <stdlib.h> // malloc
 #include <fuse.h>
@@ -15,6 +16,7 @@
 using grpc::Channel;
 using grpc::ClientContext;
 using grpc::ClientWriter;
+using grpc::ClientReader;
 using grpc::Status;
 using namespace cs739;
 
@@ -25,8 +27,10 @@ using namespace cs739;
 std::unique_ptr<AFS::Stub> stub_;
 
 struct afs_data_t {
-    std::string cache_path;
+    grpc::ClientContext context;
+    std::string cache_path; // must contain forward slash at the end.
     std::unique_ptr<AFS::Stub> stub_;
+    std::unordered_map<std::string, std::string> last_modified; // path to st_mtim
 };
 
 // int afs_access(const char *path, int mask)
@@ -106,29 +110,53 @@ struct afs_data_t {
 //     return retstat;
 // }
 
-// int afs_open(const char *path, struct fuse_file_info *fi)
-// {
-//     int retstat = 0;
-//     int fd;
-//     char fpath[PATH_MAX];
-    
-//     log_msg("\nbb_open(path\"%s\", fi=0x%08x)\n",
-// 	    path, fi);
-//     bb_fullpath(fpath, path);
-    
-//     // if the open call succeeds, my retstat is the file descriptor,
-//     // else it's -errno.  I'm making sure that in that case the saved
-//     // file descriptor is exactly -1.
-//     fd = log_syscall("open", open(fpath, fi->flags), 0);
-//     if (fd < 0)
-// 	retstat = log_error("open");
-	
-//     fi->fh = fd;
+int afs_open(const char *path, struct fuse_file_info *fi)
+{
+    std::string path_str(path);
+    Filepath filepath;
+    filepath.set_filepath(path_str));
+    char fpath[PATH_MAX];
+    if (AFS_DATA->last_modified.count(path_str) == 1) {
+        // cache exists 
+        // check 
+        StatContent stat_content;
+        AFS_DATA->stub_->Stat(&(AFS_DATA->context), filepath, &stat_content);
 
-//     log_fi(fi);
-    
-//     return retstat;
-// }
+        if ( stat_content.st_mtim() == AFS_DATA->last_modified[path_str]) {
+            // can use cache
+            fi->fh = open((AFS_DATA->cache_path + path_str).c_str(), fi->flags);
+            if (fi->fh < 0) {
+                return -errno;
+            }
+            return 0;
+        }
+        else {
+            // can't use cache. delete last_modified entry
+            AFS_DATA->last_modified.erase(path_str);
+        }
+    }
+    MetaContent msg;
+    std::unique_ptr<ClientReader<MetaContent>> reader(
+        AFS_DATA->stub_->GetContent(&(AFS_DATA->context), filepath));
+    reader->Read(&msg);
+    if (msg.file_exists()) {
+        // open file with O_TRUNC
+        std::ostream ofile(AFS_DATA->cache_path + path_str, 
+            std::ios::binary | std::ios::out | std::ios::trunc);
+        // TODO: check failure
+        ofile << msg.b();
+        while (reader->Read(&msg)) {
+            ofile << msg.b();
+        }
+    }
+    else {
+        close(creat((AFS_DATA->cache_path + path_str).c_str(), 00777));
+    }
+    fi->fh = open((AFS_DATA->cache_path + path_str).c_str(), fi->flags);
+    if (fi->fh < 0)
+        return -errno;
+    return 0;    
+}
 
 // int afs_flush(const char *path, struct fuse_file_info *fi)
 // {
@@ -194,22 +222,29 @@ int afs_getattr(const char *path, struct stat *stbuf)
     cs739::Filepath request;
     cs739::StatContent response;
     request.set_filepath(std::string(path));
-	AFS_DATA->stub_->Stat(&context, request, &response);
+	AFS_DATA->stub_->Stat(AFS_DATA.context, request, &response);
     
     int res = 0;
 
-	memset(stbuf, 0, sizeof(struct stat));
-	if (strcmp(path, "/") == 0) {
-		stbuf->st_mode = S_IFDIR | 0755;
-		stbuf->st_nlink = 2;
-	} else if (strcmp(path, hello_path) == 0) {
-		stbuf->st_mode = S_IFREG | 0444;
-		stbuf->st_nlink = 1;
-		stbuf->st_size = strlen(hello_str);
-	} else
-		res = -ENOENT;
+	if (response.return_code() < 0) {
+        return -response.error_number();
+    }
 
-	return res;
+    stbuf->st_atim = *((timespec *)response.st_atim().c_str());
+    stbuf->st_mtim = *((timespec *)response.st_mtim().c_str());
+    stbuf->st_ctim = *((timespec *)response.st_ctim().c_str());
+    stbuf->st_dev = (dev_t)response.st_dev();
+    stbuf->st_ino = (ino_t)response.st_ino();
+    stbuf->st_mode = (mode_t)response.st_mode();
+    stbuf->st_nlink = (nlink_t)response.st_nlink();
+    stbuf->st_uid = (uid_t)response.st_uid();
+    stbuf->st_gid = (gid_t)response.st_gid();
+    stbuf->st_rdev = (dev_t)response.st_rdev();
+    stbuf->st_size = (off_t)response.st_size();
+    stbuf->st_blksize = (blksize_t)response.st_blksize();
+    stbuf->st_blocks = (blkcnt_t)response.st_blocks();
+
+    return response.return_code();
 }
 
 // int afs_mkdir(const char *path, mode_t mode)
@@ -283,6 +318,7 @@ int main(int argc, char *argv[])
     afs_data_t* afs_data = new afs_data_t;
 	afs_data->stub_ = AFS::NewStub(grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials()));
     afs_data->cache_path = argv[1]; // CHECK!
+    if (afs_data->cache_path.back() != '/') { afs_data->cache_path += '/'; }
 
     return fuse_main(argc, argv, &afs_oper, afs_data);
 }
