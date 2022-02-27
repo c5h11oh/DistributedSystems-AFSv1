@@ -5,6 +5,7 @@ package cs739;
 service AFS {
   rpc GetAttr(Filepath) returns(Meta);
   rpc GetContent(Filepath) returns(stream MetaContent);
+  rpc Ls(Filepath) returns(LsResult);
   rpc Write(stream FilepathContent) returns(Meta);
   rpc Stat(Filepath) returns(StatContent);
   rpc Unlink(Filepath) returns(Response);
@@ -30,6 +31,10 @@ message MetaContent {
   bool file_exists = 1;
   bytes timestamp = 2; // save struct stat.st_mtim
   bytes b = 3;
+}
+
+message LsResult {
+  repeated string d_name = 1;
 }
 
 // struct stat {
