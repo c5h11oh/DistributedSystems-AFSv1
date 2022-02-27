@@ -114,7 +114,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
 {
     std::string path_str(path);
     Filepath filepath;
-    filepath.set_filepath(path_str));
+    filepath.set_filepath(path_str);
     char fpath[PATH_MAX];
     if (AFS_DATA->last_modified.count(path_str) == 1) {
         // cache exists 
@@ -140,8 +140,9 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         AFS_DATA->stub_->GetContent(&(AFS_DATA->context), filepath));
     reader->Read(&msg);
     if (msg.file_exists()) {
+        AFS_DATA->last_modified[path_str] = msg.timestamp();
         // open file with O_TRUNC
-        std::ostream ofile(AFS_DATA->cache_path + path_str, 
+        std::ofstream ofile(AFS_DATA->cache_path + path_str,
             std::ios::binary | std::ios::out | std::ios::trunc);
         // TODO: check failure
         ofile << msg.b();
@@ -150,6 +151,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         }
     }
     else {
+        AFS_DATA->last_modified[path_str] = "local_generated_file";
         close(creat((AFS_DATA->cache_path + path_str).c_str(), 00777));
     }
     fi->fh = open((AFS_DATA->cache_path + path_str).c_str(), fi->flags);
@@ -222,7 +224,7 @@ int afs_getattr(const char *path, struct stat *stbuf)
     cs739::Filepath request;
     cs739::StatContent response;
     request.set_filepath(std::string(path));
-	AFS_DATA->stub_->Stat(AFS_DATA.context, request, &response);
+	AFS_DATA->stub_->Stat(&(AFS_DATA->context), request, &response);
     
     int res = 0;
 
