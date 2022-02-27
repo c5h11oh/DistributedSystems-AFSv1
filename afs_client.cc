@@ -1,4 +1,6 @@
+#define FUSE_USE_VERSION 26
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 #include <unistd.h>
@@ -20,8 +22,8 @@ using grpc::ClientReader;
 using grpc::Status;
 using namespace cs739;
 
-#define FUSE_USE_VERSION 26
 #define PATH_MAX 4096
+#define BUFSIZE 65500
 #define AFS_DATA ((struct afs_data_t *) fuse_get_context()->private_data)
 
 std::unique_ptr<AFS::Stub> stub_;
@@ -33,82 +35,24 @@ struct afs_data_t {
     std::unordered_map<std::string, std::string> last_modified; // path to st_mtim
 };
 
-// int afs_access(const char *path, int mask)
-// {
-//     int retstat = 0;
-//     char fpath[PATH_MAX];
-   
-//     bb_fullpath(fpath, path);
-    
-//     retstat = access(fpath, mask);
-    
-//     if (retstat < 0)
-// 	retstat = log_error("bb_access access");
-    
-//     return retstat;
-// }
+std::string fullpath(const char* rel_path) {
+    return AFS_DATA->cache_path + std::string(rel_path);
+}
 
-// int afs_opendir(const char *path, struct fuse_file_info *fi)
-// {
-//     DIR *dp;
-//     int retstat = 0;
-//     char fpath[PATH_MAX];
-    
-//     bb_fullpath(fpath, path);
-
-//     // since opendir returns a pointer, takes some custom handling of
-//     // return status.
-//     dp = opendir(fpath);
-//     log_msg("    opendir returned 0x%p\n", dp);
-//     if (dp == NULL)
-// 	retstat = log_error("bb_opendir opendir");
-    
-//     fi->fh = (intptr_t) dp;
-    
-//     log_fi(fi);
-    
-//     return retstat;
-// }
-
-// int afs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset,
-// 	       struct fuse_file_info *fi)
-// {
-//     int retstat = 0;
-//     DIR *dp;
-//     struct dirent *de;
-    
-//     log_msg("\nbb_readdir(path=\"%s\", buf=0x%08x, filler=0x%08x, offset=%lld, fi=0x%08x)\n",
-// 	    path, buf, filler, offset, fi);
-//     // once again, no need for fullpath -- but note that I need to cast fi->fh
-//     dp = (DIR *) (uintptr_t) fi->fh;
-
-//     // Every directory contains at least two entries: . and ..  If my
-//     // first call to the system readdir() returns NULL I've got an
-//     // error; near as I can tell, that's the only condition under
-//     // which I can get an error from readdir()
-//     de = readdir(dp);
-//     log_msg("    readdir returned 0x%p\n", de);
-//     if (de == 0) {
-// 	retstat = log_error("bb_readdir readdir");
-// 	return retstat;
-//     }
-
-//     // This will copy the entire directory into the buffer.  The loop exits
-//     // when either the system readdir() returns NULL, or filler()
-//     // returns something non-zero.  The first case just means I've
-//     // read the whole directory; the second means the buffer is full.
-//     do {
-// 	log_msg("calling filler with name %s\n", de->d_name);
-// 	if (filler(buf, de->d_name, NULL, 0) != 0) {
-// 	    log_msg("    ERROR bb_readdir filler:  buffer full");
-// 	    return -ENOMEM;
-// 	}
-//     } while ((de = readdir(dp)) != NULL);
-    
-//     log_fi(fi);
-    
-//     return retstat;
-// }
+int afs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset,
+	       struct fuse_file_info *fi)
+{
+    Filepath filepath;
+    LsResult ls_result;
+    filepath.set_filepath(fullpath(path));
+    AFS_DATA->stub_->Ls(&(AFS_DATA->context), filepath, &ls_result);
+    for (int i = 0; i < ls_result.d_name_size(); ++i) {
+        if (filler(buf, ls_result.d_name(i).c_str(), NULL, 0) != 0) {
+            return -ENOMEM;
+        }
+    }
+    return 0;
+}
 
 int afs_open(const char *path, struct fuse_file_info *fi)
 {
@@ -160,25 +104,38 @@ int afs_open(const char *path, struct fuse_file_info *fi)
     return 0;    
 }
 
-// int afs_flush(const char *path, struct fuse_file_info *fi)
-// {
-//     log_msg("\nbb_flush(path=\"%s\", fi=0x%08x)\n", path, fi);
-//     // no need to get fpath on this one, since I work from fi->fh not the path
-//     log_fi(fi);
-	
-//     return 0;
-// }
+int afs_release(const char *path, struct fuse_file_info *fi)
+{
+    close(fi->fh);
+    Meta meta;
+    FilepathContent content;
+    content.set_filepath(std::string(path));
 
-// int afs_release(const char *path, struct fuse_file_info *fi)
-// {
-//     log_msg("\nbb_release(path=\"%s\", fi=0x%08x)\n",
-// 	  path, fi);
-//     log_fi(fi);
+    auto writer = AFS_DATA->stub_->Write(&(AFS_DATA->context), &meta);
+    std::ifstream file(fullpath(path), std::ios::in);
+    std::string buf(BUFSIZE, '\0');
+    while (file.read(&buf[0], BUFSIZE)) {
+        content.set_b(buf);
+        if (writer->Write(content))
+            break;
+    }
+    if (file.eof()) {
+        buf.resize(file.gcount());
+        content.set_b(buf);
+        writer->Write(content);
+    }
+    writer->WritesDone();
+    file.close();
 
-//     // We need to close the file.  Had we allocated any resources
-//     // (buffers etc) we'd need to free them here as well.
-//     return log_syscall("close", close(fi->fh), 0);
-// }
+    Status status = writer->Finish();
+    if (status.ok()) {
+        AFS_DATA->last_modified[std::string(path)] = meta.timestamp();
+    } else {
+        // TODO: handle error
+        std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
+    }
+    return 0;
+}
 
 // int afs_mknod(const char *path, mode_t mode, dev_t dev)
 // {
@@ -220,9 +177,8 @@ int afs_open(const char *path, struct fuse_file_info *fi)
 
 int afs_getattr(const char *path, struct stat *stbuf)
 {
-    grpc::ClientContext context;
-    cs739::Filepath request;
-    cs739::StatContent response;
+    Filepath request;
+    StatContent response;
     request.set_filepath(std::string(path));
 	AFS_DATA->stub_->Stat(&(AFS_DATA->context), request, &response);
     
@@ -298,11 +254,8 @@ int afs_getattr(const char *path, struct stat *stbuf)
 // }
 
 static struct fuse_operations afs_oper = {
-	// .access		= afs_access,
-	.opendir	= afs_opendir,
 	.readdir	= afs_readdir,
 	.open		= afs_open,
-	.flush		= afs_flush,
 	.release	= afs_release,
 	.mknod		= afs_mknod,
 	.unlink		= afs_unlink,
