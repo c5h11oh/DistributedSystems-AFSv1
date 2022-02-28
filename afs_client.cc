@@ -262,18 +262,7 @@ int afs_write(const char *path, const char *buf, size_t size, off_t offset,
     return rc;
 }
 
-static struct fuse_operations afs_oper = {
-	.getattr	= afs_getattr,
-	.mknod		= afs_mknod,
-	.mkdir		= afs_mkdir,
-	.unlink		= afs_unlink,
-	.rmdir		= afs_rmdir,
-	.open		= afs_open,
-	.read		= afs_read,
-	.write		= afs_write, 
-	.release	= afs_release,
-	.readdir	= afs_readdir,
-};
+static struct fuse_operations afs_oper;
 
 int main(int argc, char *argv[])
 {
@@ -284,5 +273,15 @@ int main(int argc, char *argv[])
     afs_data->cache_path = argv[1]; // CHECK!
     if (afs_data->cache_path.back() != '/') { afs_data->cache_path += '/'; }
 
+    afs_oper.getattr	= afs_getattr;
+    afs_oper.mknod		= afs_mknod;
+    afs_oper.mkdir		= afs_mkdir;
+    afs_oper.unlink		= afs_unlink;
+    afs_oper.rmdir		= afs_rmdir;
+    afs_oper.open		= afs_open;
+    afs_oper.read		= afs_read;
+    afs_oper.write		= afs_write;
+    afs_oper.release	= afs_release;
+    afs_oper.readdir	= afs_readdir;
     return fuse_main(argc, argv, &afs_oper, afs_data);
 }
