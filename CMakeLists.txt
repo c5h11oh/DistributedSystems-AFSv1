@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.2)
 project(GRPC_CS739 VERSION 0.1.0)
 
+set(CMAKE_VERBOSE_MAKEFILE ON)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FUSE REQUIRED fuse)
+
 # https://stackoverflow.com/questions/41361631/optimize-in-cmake-by-default
 add_compile_options(-std=c++11)
 if(NOT CMAKE_BUILD_TYPE)
@@ -10,6 +15,7 @@ endif()
 # set(CMAKE_CXX_FLAGS "-Wall -Wextra")
 set(CMAKE_CXX_FLAGS_DEBUG "-O -g")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+set(CMAKE_CXX_FLAGS "-D_FILE_OFFSET_BITS=64")
 
 # https://github.com/IvanSafonov/grpc-cmake-example/blob/master/CMakeLists.txt
 
@@ -94,6 +100,7 @@ foreach(_target client server)
         ${_REFLECTION}
         ${_GRPC_GRPCPP}
         ${_PROTOBUF_LIBPROTOBUF}
+        ${FUSE_LIBRARIES}
     )
 endforeach(_target)
 
