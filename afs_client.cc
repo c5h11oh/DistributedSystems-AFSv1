@@ -1,8 +1,12 @@
 #define FUSE_USE_VERSION 26
+// standard c++
 #include <iostream>
+#include <sstream>
 #include <fstream>
+#include <iomanip>
 #include <string>
 #include <unordered_map>
+// standard c
 #include <unistd.h>
 #include <stdlib.h> // malloc
 #include <fuse.h>
@@ -11,7 +15,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <dirent.h>
+// openssl library
+#include <openssl/sha.h>
+// grpc library
 #include <grpcpp/grpcpp.h>
+// program's header
 #include "afs.grpc.pb.h"
 #include "afs.pb.h"
 
@@ -25,18 +33,31 @@ using namespace cs739;
 #define PATH_MAX 4096
 #define BUFSIZE 65500
 #define AFS_DATA ((struct afs_data_t *) fuse_get_context()->private_data)
+#define LOCAL_CREAT_FILE "locally_generated_file"
 
 std::unique_ptr<AFS::Stub> stub_;
 
 struct afs_data_t {
     grpc::ClientContext context;
-    std::string cache_path; // must contain forward slash at the end.
+    std::string cache_root; // must contain forward slash at the end.
     std::unique_ptr<AFS::Stub> stub_;
     std::unordered_map<std::string, std::string> last_modified; // path to st_mtim
 };
 
-std::string fullpath(const char* rel_path) {
-    return AFS_DATA->cache_path + std::string(rel_path);
+std::string cachepath(const char* rel_path) {
+    // local cached filename is SHA-256 hash of the path
+    // referencing https://stackoverflow.com/questions/2262386/generate-sha256-with-openssl-and-c
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_CTX sha256;
+    SHA256_Init(&sha256);
+    SHA256_Update(&sha256, rel_path, strlen(rel_path));
+    SHA256_Final(hash, &sha256);
+    std::stringstream ss;
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << ((int)hash[i]);
+    }
+    std::cout << "hashed hex string is " << ss.str() << std::endl; // debug
+    return AFS_DATA->cache_root + ss.str();
 }
 
 int afs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset,
@@ -44,7 +65,7 @@ int afs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offse
 {
     Filepath filepath;
     LsResult ls_result;
-    filepath.set_filepath(fullpath(path));
+    filepath.set_filepath(std::string(path));
     AFS_DATA->stub_->Ls(&(AFS_DATA->context), filepath, &ls_result);
     for (int i = 0; i < ls_result.d_name_size(); ++i) {
         if (filler(buf, ls_result.d_name(i).c_str(), NULL, 0) != 0) {
@@ -62,13 +83,21 @@ int afs_open(const char *path, struct fuse_file_info *fi)
     char fpath[PATH_MAX];
     if (AFS_DATA->last_modified.count(path_str) == 1) {
         // cache exists 
-        // check 
+        // check if it is locally created file
+        if (AFS_DATA->last_modified[path_str] == LOCAL_CREAT_FILE) {
+            fi->fh = open(cachepath(path).c_str(), fi->flags);
+            if (fi->fh < 0) {
+                return -errno;
+            }
+            return 0;
+        }
+        
         StatContent stat_content;
         AFS_DATA->stub_->Stat(&(AFS_DATA->context), filepath, &stat_content);
 
         if ( stat_content.st_mtim() == AFS_DATA->last_modified[path_str]) {
             // can use cache
-            fi->fh = open((AFS_DATA->cache_path + path_str).c_str(), fi->flags);
+            fi->fh = open(cachepath(path).c_str(), fi->flags);
             if (fi->fh < 0) {
                 return -errno;
             }
@@ -86,7 +115,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
     if (msg.file_exists()) {
         AFS_DATA->last_modified[path_str] = msg.timestamp();
         // open file with O_TRUNC
-        std::ofstream ofile(AFS_DATA->cache_path + path_str,
+        std::ofstream ofile(AFS_DATA->cache_root + path_str,
             std::ios::binary | std::ios::out | std::ios::trunc);
         // TODO: check failure
         ofile << msg.b();
@@ -95,10 +124,10 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         }
     }
     else {
-        AFS_DATA->last_modified[path_str] = "local_generated_file";
-        close(creat((AFS_DATA->cache_path + path_str).c_str(), 00777));
+        AFS_DATA->last_modified[path_str] = LOCAL_CREAT_FILE;
+        close(creat(cachepath(path).c_str(), 00777));
     }
-    fi->fh = open((AFS_DATA->cache_path + path_str).c_str(), fi->flags);
+    fi->fh = open(cachepath(path).c_str(), fi->flags);
     if (fi->fh < 0)
         return -errno;
     return 0;    
@@ -112,7 +141,7 @@ int afs_release(const char *path, struct fuse_file_info *fi)
     content.set_filepath(std::string(path));
 
     auto writer = AFS_DATA->stub_->Write(&(AFS_DATA->context), &meta);
-    std::ifstream file(fullpath(path), std::ios::in);
+    std::ifstream file(cachepath(path), std::ios::in);
     std::string buf(BUFSIZE, '\0');
     while (file.read(&buf[0], BUFSIZE)) {
         content.set_b(buf);
@@ -142,7 +171,7 @@ int afs_mknod(const char *path, mode_t mode, dev_t dev)
     int rc;
 
     // creat a local file
-    rc = open(fullpath(path).c_str(), O_CREAT | O_EXCL | O_WRONLY, mode);
+    rc = open(cachepath(path).c_str(), O_CREAT | O_EXCL | O_WRONLY, mode);
     if (rc >= 0) {
         rc = close(rc);
     }
@@ -178,7 +207,7 @@ int afs_unlink(const char *path)
     fp.set_filepath(path_str);
 
     // remove cached file
-    unlink(fullpath(path).c_str());
+    unlink(cachepath(path).c_str());
     AFS_DATA->last_modified.erase(std::string(path));    
     AFS_DATA->stub_->Unlink(&(AFS_DATA->context), fp, &res);
     if (res.return_code() < 0) {
@@ -270,8 +299,8 @@ int main(int argc, char *argv[])
     ;
     afs_data_t* afs_data = new afs_data_t;
 	afs_data->stub_ = AFS::NewStub(grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials()));
-    afs_data->cache_path = argv[1]; // CHECK!
-    if (afs_data->cache_path.back() != '/') { afs_data->cache_path += '/'; }
+    afs_data->cache_root = argv[1]; // CHECK!
+    if (afs_data->cache_root.back() != '/') { afs_data->cache_root += '/'; }
 
     afs_oper.getattr	= afs_getattr;
     afs_oper.mknod		= afs_mknod;
