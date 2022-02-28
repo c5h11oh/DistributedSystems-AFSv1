@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <sys/stat.h>
 // openssl library
 #include <openssl/sha.h>
 // grpc library
@@ -34,6 +35,7 @@ using namespace cs739;
 #define BUFSIZE 65500
 #define AFS_DATA ((struct afs_data_t *) fuse_get_context()->private_data)
 #define LOCAL_CREAT_FILE "locally_generated_file"
+#define DEFAULT_SERVER "127.0.0.1:53706"
 
 std::unique_ptr<AFS::Stub> stub_;
 
@@ -293,13 +295,75 @@ int afs_write(const char *path, const char *buf, size_t size, off_t offset,
 
 static struct fuse_operations afs_oper;
 
+void print_usage(char* prog_name) {
+    std::cout << prog_name
+              << " [-s <serverhostname:port>] -c <directory for cached files> [-h]"
+              << std::endl;
+    std::cout << "[-h] shows this usage info." << std::endl
+              << "If \"-s <serverhostname:port>\" is not present, " << DEFAULT_SERVER
+              << " is used." << std::endl;
+}
+
 int main(int argc, char *argv[])
 {
-    std::string server_addr = "127.0.0.1:53706";
-    ;
+    int opt;
+    char** mount_point = new char*[3];
+    if (!mount_point) {
+        std::cerr << "C++ new failed.\n";
+        exit(1);
+    }
+    mount_point[0] = argv[0];
+    mount_point[1] = mount_point[2] = NULL;
+    char* cache_root = NULL;
+    std::string server_addr = DEFAULT_SERVER;
+    while ((opt = getopt(argc, argv, "hs:c:m:")) != -1) {
+        switch (opt) {
+            case 'h':
+                print_usage(argv[0]);
+                exit(0);
+            case 's':
+                server_addr = optarg;
+                break;
+            case 'c':
+                cache_root = optarg;
+                break;
+            case 'm':
+                mount_point[1] = optarg;
+                break;
+            case '?':
+            default:
+                std::cerr << argv[0] << ": invalid argument\n";
+                print_usage(argv[0]);
+                exit(1);
+        }
+    }
+    if (!cache_root) {
+        std::cerr << argv[0] << ": use -c to specify cached files directory.\n";
+        std::cerr << "type -h for usage.\n";
+        exit(1);
+    }
+    if (!mount_point[1]) {
+        std::cerr << argv[0] << ": use -m to specify mount point directory.\n";
+        std::cerr << "type -h for usage.\n";
+        exit(1);
+    }
+    
+    // check cache_root and mount_point[0] directory exists
+    struct stat sb;
+    if (stat(cache_root, &sb) != 0 || !S_ISDIR(sb.st_mode)) {
+        std::cerr << argv[0] << ": cached files directory does not exist.\n";
+        std::cerr << "type -h for usage.\n";
+        exit(1);
+    }
+    if (stat(mount_point[1], &sb) != 0 || !S_ISDIR(sb.st_mode)) {
+        std::cerr << argv[0] << ": mount point directory does not exist.\n";
+        std::cerr << "type -h for usage.\n";
+        exit(1);
+    }
+
     afs_data_t* afs_data = new afs_data_t;
 	afs_data->stub_ = AFS::NewStub(grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials()));
-    afs_data->cache_root = argv[1]; // CHECK!
+    afs_data->cache_root = cache_root;
     if (afs_data->cache_root.back() != '/') { afs_data->cache_root += '/'; }
 
     afs_oper.getattr	= afs_getattr;
@@ -312,5 +376,7 @@ int main(int argc, char *argv[])
     afs_oper.write		= afs_write;
     afs_oper.release	= afs_release;
     afs_oper.readdir	= afs_readdir;
-    return fuse_main(argc, argv, &afs_oper, afs_data);
+    int rc = fuse_main(2, mount_point, &afs_oper, afs_data);
+    delete mount_point;
+    return rc;
 }
