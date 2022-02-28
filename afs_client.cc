@@ -137,43 +137,55 @@ int afs_release(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
-// int afs_mknod(const char *path, mode_t mode, dev_t dev)
-// {
-//     int retstat;
-//     char fpath[PATH_MAX];
-    
-//     log_msg("\nbb_mknod(path=\"%s\", mode=0%3o, dev=%lld)\n",
-// 	  path, mode, dev);
-//     bb_fullpath(fpath, path);
-    
-//     // On Linux this could just be 'mknod(path, mode, dev)' but this
-//     // tries to be be more portable by honoring the quote in the Linux
-//     // mknod man page stating the only portable use of mknod() is to
-//     // make a fifo, but saying it should never actually be used for
-//     // that.
-//     if (S_ISREG(mode)) {
-// 	retstat = log_syscall("open", open(fpath, O_CREAT | O_EXCL | O_WRONLY, mode), 0);
-// 	if (retstat >= 0)
-// 	    retstat = log_syscall("close", close(retstat), 0);
-//     } else
-// 	if (S_ISFIFO(mode))
-// 	    retstat = log_syscall("mkfifo", mkfifo(fpath, mode), 0);
-// 	else
-// 	    retstat = log_syscall("mknod", mknod(fpath, mode, dev), 0);
-    
-//     return retstat;
-// }
+int afs_mknod(const char *path, mode_t mode, dev_t dev)
+{
+    int rc;
 
-// int afs_unlink(const char *path)
-// {
-//     char fpath[PATH_MAX];
-    
-//     log_msg("bb_unlink(path=\"%s\")\n",
-// 	    path);
-//     bb_fullpath(fpath, path);
+    // creat a local file
+    rc = open(fullpath(path).c_str(), O_CREAT | O_EXCL | O_WRONLY, mode);
+    if (rc >= 0) {
+        rc = close(rc);
+    }
 
-//     return log_syscall("unlink", unlink(fpath), 0);
-// }
+    if (rc < 0)
+        return -errno;
+
+    Meta meta;
+    FilepathContent content;
+    content.set_filepath(std::string(path));
+    auto writer = AFS_DATA->stub_->Write(&(AFS_DATA->context), &meta);
+    std::string buf;
+    content.set_b(buf);
+    writer->Write(content);
+    writer->WritesDone();
+
+    Status status = writer->Finish();
+    if (status.ok()) {
+        AFS_DATA->last_modified[std::string(path)] = meta.timestamp();
+    } else {
+        // TODO: handle error
+        std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
+    }
+
+    return 0;
+}
+
+int afs_unlink(const char *path)
+{
+    std::string path_str(path);
+    Filepath fp;
+    Response res;
+    fp.set_filepath(path_str);
+
+    // remove cached file
+    unlink(fullpath(path).c_str());
+    AFS_DATA->last_modified.erase(std::string(path));    
+    AFS_DATA->stub_->Unlink(&(AFS_DATA->context), fp, &res);
+    if (res.return_code() < 0) {
+        return -res.error_number();
+    }
+    return res.return_code();
+}
 
 int afs_getattr(const char *path, struct stat *stbuf)
 {
@@ -205,65 +217,62 @@ int afs_getattr(const char *path, struct stat *stbuf)
     return response.return_code();
 }
 
-// int afs_mkdir(const char *path, mode_t mode)
-// {
-//     char fpath[PATH_MAX];
-    
-//     log_msg("\nbb_mkdir(path=\"%s\", mode=0%3o)\n",
-// 	    path, mode);
-//     bb_fullpath(fpath, path);
+int afs_mkdir(const char *path, mode_t mode)
+{
+    std::string path_str(path);
+    Filepath fp;
+    Response res;
+    fp.set_filepath(path_str);
 
-//     return log_syscall("mkdir", mkdir(fpath, mode), 0);
-// }
+    AFS_DATA->stub_->Mkdir(&(AFS_DATA->context), fp, &res);
+    if (res.return_code() < 0) {
+        return -res.error_number();
+    }
+    return res.return_code();
+}
 
-// int afs_rmdir(const char *path)
-// {
-//     char fpath[PATH_MAX];
-    
-//     log_msg("bb_rmdir(path=\"%s\")\n",
-// 	    path);
-//     bb_fullpath(fpath, path);
+int afs_rmdir(const char *path)
+{
+    std::string path_str(path);
+    Filepath fp;
+    Response res;
+    fp.set_filepath(path_str);
 
-//     return log_syscall("rmdir", rmdir(fpath), 0);
-// }
+    AFS_DATA->stub_->Rmdir(&(AFS_DATA->context), fp, &res);
+    if (res.return_code() < 0) {
+        return -res.error_number();
+    }
+    return res.return_code();
+}
 
-// int afs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
-// {
-//     int retstat = 0;
-    
-//     log_msg("\nbb_read(path=\"%s\", buf=0x%08x, size=%d, offset=%lld, fi=0x%08x)\n",
-// 	    path, buf, size, offset, fi);
-//     // no need to get fpath on this one, since I work from fi->fh not the path
-//     log_fi(fi);
+int afs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
+{
+    ssize_t rc = pread(fi->fh, buf, size, offset);
+    if (rc < 0)
+        return -errno;
+    return rc;
+}
 
-//     return log_syscall("pread", pread(fi->fh, buf, size, offset), 0);
-// }
-
-// int afs_write(const char *path, const char *buf, size_t size, off_t offset,
-// 	     struct fuse_file_info *fi)
-// {
-//     int retstat = 0;
-    
-//     log_msg("\nbb_write(path=\"%s\", buf=0x%08x, size=%d, offset=%lld, fi=0x%08x)\n",
-// 	    path, buf, size, offset, fi
-// 	    );
-//     // no need to get fpath on this one, since I work from fi->fh not the path
-//     log_fi(fi);
-
-//     return log_syscall("pwrite", pwrite(fi->fh, buf, size, offset), 0);
-// }
+int afs_write(const char *path, const char *buf, size_t size, off_t offset,
+	     struct fuse_file_info *fi)
+{
+    ssize_t rc = pwrite(fi->fh, buf, size, offset);
+    if (rc < 0)
+        return -errno;
+    return rc;
+}
 
 static struct fuse_operations afs_oper = {
-	.readdir	= afs_readdir,
-	.open		= afs_open,
-	.release	= afs_release,
-	.mknod		= afs_mknod,
-	.unlink		= afs_unlink,
 	.getattr	= afs_getattr,
+	.mknod		= afs_mknod,
 	.mkdir		= afs_mkdir,
+	.unlink		= afs_unlink,
 	.rmdir		= afs_rmdir,
+	.open		= afs_open,
 	.read		= afs_read,
 	.write		= afs_write, 
+	.release	= afs_release,
+	.readdir	= afs_readdir,
 };
 
 int main(int argc, char *argv[])
