@@ -3,7 +3,7 @@ syntax = "proto3";
 package cs739;
 
 service AFS {
-  rpc GetAttr(Filepath) returns(Meta);
+  rpc GetMeta(Filepath) returns(Meta);
   rpc GetContent(Filepath) returns(stream MetaContent);
   rpc Ls(Filepath) returns(LsResult);
   rpc Write(stream FilepathContent) returns(Meta);
