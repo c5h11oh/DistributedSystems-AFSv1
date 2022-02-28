@@ -1,9 +1,9 @@
 #!/bin/bash
-INSTALL_PATH="/p2/installs"
+export INSTALL_PATH="/p2/installs"
 
 # install
 sudo apt-get update
-sudo apt-get install -y build-essential wget gcc g++ gdb git vim htop curl autoconf libtool pkg-config fuse libfuse-dev
+sudo apt-get install -y build-essential wget gcc g++ gdb git vim htop curl autoconf libtool pkg-config fuse libfuse-dev libssl-dev
 ## get a newer cmake
 sudo apt-get remove cmake
 wget https://github.com/Kitware/CMake/releases/download/v3.22.2/cmake-3.22.2-linux-x86_64.sh
