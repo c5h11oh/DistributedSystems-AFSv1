@@ -297,8 +297,8 @@ static struct fuse_operations afs_oper;
 
 void print_usage(char* prog_name) {
     std::cout << prog_name
-              << " [-s <serverhostname:port>] -c <directory for cached files> [-h]"
-              << std::endl;
+              << " [-s <serverhostname:port>] -c <cached files directory> "
+              << "-m <mount point directory> | -h" <<std::endl;
     std::cout << "[-h] shows this usage info." << std::endl
               << "If \"-s <serverhostname:port>\" is not present, " << DEFAULT_SERVER
               << " is used." << std::endl;
