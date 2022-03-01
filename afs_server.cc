@@ -1,26 +1,117 @@
+// c++ library
 #include <iostream>
 #include <sstream>
 #include <fstream>
 #include <iomanip>
 #include <string>
+#include <memory>
 
+// c library
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
-
 #include <errno.h>
+
+// grpc
+#include <grpc/grpc.h>
+#include <grpcpp/security/server_credentials.h>
+#include <grpcpp/server.h>
+#include <grpcpp/server_builder.h>
+#include <grpcpp/server_context.h>
+
+#include "afs.grpc.pb.h"
+#include "afs.pb.h"
 
 using namespace cs739;
 using namespace grpc;
 
-#define SERVER_DIR "/tmp/afs"
+#define BUFSIZE 65500
+std::string AFS_ROOT_DIR;
 
 class AFSServiceImpl final : public cs739::AFS::Service {
 public:
-    explicit AFSServiceImpl() {}
+    explicit AFSImpl() {}
 
-    Status Stat(ServerContext* context, Filepath* request, StatContent* response) {
+    Status GetMeta(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Meta* response) {
+        // std::cout << "Meta call received for filepath: " << request->filepath() << std::endl;
+
+        // struct stat stat_content;
+        // int res = stat(request->filepath().c_str(), &stat_content);
+
+        // if(res == -1) {
+        //     response->set_file_exists(false);
+        // } else {
+        //     response->set_file_exists(true);
+        //     std::string ts(reinterpret_cast<char *>(&stat_content.st_mtim), sizeof(stat_content.st_mtim));
+        //     response->set_timestamp(ts);
+        // }
+        // return Status::OK;
+        std::cout << "GetMeta: this is actually called!"
+                  << " NOW YOU SHOULD IMPLEMENT IT LOL\n";
+        response->set_file_exists(false);
+        return Status::OK;
+    }
+    Status GetContent(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::grpc::ServerWriter< ::cs739::MetaContent>* writer){
+        std::string filepath(AFS_ROOT_DIR + request->filepath());
+        std::ifstream file(filepath, std::ios::in);
+        MetaContent msg;
+        struct stat sb;
+
+        if (!file.is_open()) {
+            msg.set_file_exists(false);
+            writer->Write(msg);
+            return Status::OK;
+        }
+        msg.set_file_exists(true);
+        stat(filepath.c_str(), &sb);
+        std::string ts(reinterpret_cast<char *>(&sb.st_mtim), sizeof(sb.st_mtim));
+        msg.set_timestamp(ts);
+        
+        std::string buf(BUFSIZE, '\0');
+        while (file.read(&buf[0], BUFSIZE)) {
+            msg.set_b(buf);
+            if (!writer->Write(msg))
+                break;
+        }
+        if (file.eof()) {
+            buf.resize(file.gcount());
+            msg.set_b(buf);
+            writer->Write(msg);
+        }
+        return Status::OK;
+    }
+    Status Ls(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::LsResult* response){
+        DIR *dir;
+        dirent *entry;
+
+        dir = opendir(getServerFilepath(request->filepath()));
+        while(entry = readdir(dir)) {
+            const char *d_name = entry->d_name;
+            std::string* s = response->add_d_name();
+            s->assign(entry->d_name);
+        }
+        closedir(dir);
+        return Status::OK;
+    }
+    Status Write(::grpc::ServerContext* context, ::grpc::ServerReader< ::cs739::FilepathContent>* reader, ::cs739::Meta* response){
+        FilepathContent msg;
+        reader->Read(&msg);
+        std::string filepath (AFS_ROOT_DIR + msg.filepath());
+        std::ofstream file(filepath, std::ios::trunc | std::ios::out);
+        if (!file.is_open()) {
+            Status s(StatusCode::NOT_FOUND, "Cannot open file");
+            return s;
+        }
+        file << msg.b();
+        while (reader->Read(&msg)) {
+            file << msg.b();
+        }
+        file.close();
+        
+        return Status::OK;
+    }
+    Status Stat(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::StatContent* response){
         std::cout << "Stat call received for filepath: " << request->filepath() << std::endl;
 
         struct stat stat_content;
@@ -30,8 +121,7 @@ public:
             response->set_return_code(-1);
             response->set_error_number(errno);
         } else {
-            response->set_return_code(1);
-            response->set_error_number();
+            response->set_return_code(0);
 
             response->set_st_dev(stat_content.st_dev);
             response->set_st_ino(stat_content.st_ino);
@@ -53,73 +143,38 @@ public:
         }
         return Status::OK;
     }
-
-    Status GetMeta(ServerContext* context, Filepath* request, Meta* response) {
-        std::cout << "Meta call received for filepath: " << request->filepath() << std::endl;
-
-        struct stat stat_content;
-        int res = stat(request->filepath().c_str(), &stat_content);
-
-        if(res == -1) {
-            response->set_file_exists(-1);
-        } else {
-            response->set_file_exists(1);
-            std::string ts(reinterpret_cast<char *>(&stat_content.st_mtim), sizeof(stat_content.st_mtim));
-            response->set_timestamp(ts);
+    Status Unlink(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Response* response){
+        if(unlink(getServerFilepath(request->filepath())) == -1) {
+            response->set_return_code(-1);
+            response->set_error_number(errno);
         }
+        response->set_return_code(1);
         return Status::OK;
     }
-
-    Status Mkdir(ServerContext* context, Filepath* request, Response* response) {
-
+    Status Rmdir(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Response* response){
+        if(rmdir(getServerFilepath(request->filepath())) == -1) {
+            response->set_return_code(-1);
+            response->set_error_number(errno);
+        }
+        response->set_return_code(1);
+        return Status::OK;
+    }
+    Status Mkdir(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Response* response){
         int mode=1; // TODO 
-        if(mkdir(getServerFilepath(request->filepath().c_str()), mode) == -1) {
+        if(mkdir(getServerFilepath(request->filepath()), mode) == -1) {
             response->set_return_code(-1);
             response->set_error_number(errno);
         }
         response->set_return_code(1);
-        return Status::OK;
-    }
-
-    Status Rmdir(ServerContext* context, Filepath* request, Response* response) {
-
-        if(rmdir(getServerFilepath(request->filepath().c_str())) == -1) {
-            response->set_return_code(-1);
-            response->set_error_number(errno);
-        }
-        response->set_return_code(1);
-        return Status::OK;
-    }
-
-    Status Unlink(ServerContext* context, Filepath* request, Response* response) {
-
-        if(unlink(getServerFilepath(request->filepath().c_str())) == -1) {
-            response->set_return_code(-1);
-            response->set_error_number(errno);
-        }
-        response->set_return_code(1);
-        return Status::OK;
-    }
-
-    Status Ls(ServerContext* context, Filepath* request, LsResult* response) {
-
-        DIR *dir;
-        dirent *entry;
-
-        dir = opendir(getServerFilepath(request->filepath().c_str()));
-        while(entry = readdir(dir)) {
-            const char *d_name = entry->d_name;
-            response->add_d_name()->str::string(d_name);
-        }
-        closedir(dir);
         return Status::OK;
     }
 
     const std::string getServerFilepath(std::string filepath) {
-        return new std::string(std::string(SERVER_DIR)+filepath);
+        return (AFS_ROOT_DIR + filepath);
     }
-
-
+    const std::string getServerFilepath(const char* filepath) {
+        return getServerFilepath(std::string(filepath));
+    }
 };
 
 void RunServer() {
@@ -135,6 +190,17 @@ void RunServer() {
 }
 
 int main(int argc, char** argv) {
+    if (argc != 2) {
+        std::cerr << "usage: " << argv[0] << " <AFS root directory>\n";
+        exit(1);
+    }
+    struct stat sb;
+    if (stat(argv[1], &sb) != 0 || !S_ISDIR(sb.st_mode)) {
+        std::cerr << argv[0] << ": AFS root directory does not exist.\n";
+        exit(1);
+    }
+    AFS_ROOT_DIR = argv[1];
+    if (AFS_ROOT_DIR.back() != '/') { AFS_ROOT_DIR += '/'; }
     RunServer();
     
     return 0;
