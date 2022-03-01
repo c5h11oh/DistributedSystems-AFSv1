@@ -6,12 +6,15 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <unistd.h>
 
 #include <errno.h>
 
 using namespace cs739;
 using namespace grpc;
+
+#define SERVER_DIR "/tmp/afs"
 
 class AFSServiceImpl final : public cs739::AFS::Service {
 public:
@@ -21,13 +24,13 @@ public:
         std::cout << "Stat call received for filepath: " << request->filepath() << std::endl;
 
         struct stat stat_content;
-        int res = stat(request->filepath(), &stat_content);
+        int res = stat(request->filepath().c_str(), &stat_content);
 
         if(res == -1) {
             response->set_return_code(-1);
             response->set_error_number(errno);
         } else {
-            response->set_return_code(0);
+            response->set_return_code(1);
             response->set_error_number();
 
             response->set_st_dev(stat_content.st_dev);
@@ -51,7 +54,7 @@ public:
         std::cout << "Meta call received for filepath: " << request->filepath() << std::endl;
 
         struct stat stat_content;
-        int res = stat(request->filepath(), &stat_content);
+        int res = stat(request->filepath().c_str(), &stat_content);
 
         if(res == -1) {
             response->set_file_exists(-1);
@@ -61,6 +64,56 @@ public:
         }
         return Status::OK;
     }
+
+    Status Mkdir(ServerContext* context, Filepath* request, Response* response) {
+
+        int mode=1; // TODO 
+        if(mkdir(getServerFilepath(request->filepath().c_str()), mode) == -1) {
+            response->set_return_code(-1);
+            response->set_error_number(errno);
+        }
+        response->set_return_code(1);
+        return Status::OK;
+    }
+
+    Status Rmdir(ServerContext* context, Filepath* request, Response* response) {
+
+        if(rmdir(getServerFilepath(request->filepath().c_str())) == -1) {
+            response->set_return_code(-1);
+            response->set_error_number(errno);
+        }
+        response->set_return_code(1);
+        return Status::OK;
+    }
+
+    Status Unlink(ServerContext* context, Filepath* request, Response* response) {
+
+        if(unlink(getServerFilepath(request->filepath().c_str())) == -1) {
+            response->set_return_code(-1);
+            response->set_error_number(errno);
+        }
+        response->set_return_code(1);
+        return Status::OK;
+    }
+
+    Status Ls(ServerContext* context, Filepath* request, LsResult* response) {
+
+        DIR *dir;
+        dirent *entry;
+
+        dir = opendir(getServerFilepath(request->filepath().c_str()));
+        while(entry = readdir(dir)) {
+            const char *d_name = entry->d_name;
+            response->add_d_name()->str::string(d_name);
+        }
+        closedir(dir);
+        return Status::OK;
+    }
+
+    const std::string getServerFilepath(std::string filepath) {
+        return new std::string(std::string(SERVER_DIR)+filepath);
+    }
+
 
 };
 
