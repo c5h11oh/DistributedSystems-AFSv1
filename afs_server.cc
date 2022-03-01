@@ -31,7 +31,7 @@ std::string AFS_ROOT_DIR;
 
 class AFSServiceImpl final : public cs739::AFS::Service {
 public:
-    explicit AFSImpl() {}
+    explicit AFSServiceImpl() {}
 
     Status GetMeta(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Meta* response) {
         // std::cout << "Meta call received for filepath: " << request->filepath() << std::endl;
@@ -85,7 +85,7 @@ public:
         DIR *dir;
         dirent *entry;
 
-        dir = opendir(getServerFilepath(request->filepath()));
+        dir = opendir(getServerFilepath(request->filepath()).c_str());
         while(entry = readdir(dir)) {
             const char *d_name = entry->d_name;
             std::string* s = response->add_d_name();
@@ -144,7 +144,7 @@ public:
         return Status::OK;
     }
     Status Unlink(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Response* response){
-        if(unlink(getServerFilepath(request->filepath())) == -1) {
+        if(unlink(getServerFilepath(request->filepath()).c_str()) == -1) {
             response->set_return_code(-1);
             response->set_error_number(errno);
         }
@@ -152,7 +152,7 @@ public:
         return Status::OK;
     }
     Status Rmdir(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Response* response){
-        if(rmdir(getServerFilepath(request->filepath())) == -1) {
+        if(rmdir(getServerFilepath(request->filepath()).c_str()) == -1) {
             response->set_return_code(-1);
             response->set_error_number(errno);
         }
@@ -161,14 +161,14 @@ public:
     }
     Status Mkdir(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Response* response){
         int mode=1; // TODO 
-        if(mkdir(getServerFilepath(request->filepath()), mode) == -1) {
+        if(mkdir(getServerFilepath(request->filepath()).c_str(), mode) == -1) {
             response->set_return_code(-1);
             response->set_error_number(errno);
         }
         response->set_return_code(1);
         return Status::OK;
     }
-
+private:
     const std::string getServerFilepath(std::string filepath) {
         return (AFS_ROOT_DIR + filepath);
     }
