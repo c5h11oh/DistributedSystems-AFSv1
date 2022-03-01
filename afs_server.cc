@@ -43,9 +43,13 @@ public:
             response->set_st_size(stat_content.st_size);
             response->set_st_blksize(stat_content.st_blksize);
             response->set_st_blocks(stat_content.st_blocks);
-            response->set_st_atim(stat_content.st_atim);
-            response->set_st_mtim(stat_content.st_mtim);
-            response->set_st_ctim(stat_content.st_ctim);
+
+            std::string st_atim_ts(reinterpret_cast<char *>(&stat_content.st_atim), sizeof(stat_content.st_atim));
+            response->set_st_atim(st_atim_ts);
+            std::string st_mtim_ts(reinterpret_cast<char *>(&stat_content.st_mtim), sizeof(stat_content.st_mtim));
+            response->set_st_mtim(st_mtim_ts);
+            std::string st_ctim_ts(reinterpret_cast<char *>(&stat_content.st_ctim), sizeof(stat_content.st_ctim));
+            response->set_st_ctim(st_ctim_ts);
         }
         return Status::OK;
     }
@@ -60,7 +64,8 @@ public:
             response->set_file_exists(-1);
         } else {
             response->set_file_exists(1);
-            response->set_timestamp(stat_content.st_mtim);
+            std::string ts(reinterpret_cast<char *>(&stat_content.st_mtim), sizeof(stat_content.st_mtim));
+            response->set_timestamp(ts);
         }
         return Status::OK;
     }
