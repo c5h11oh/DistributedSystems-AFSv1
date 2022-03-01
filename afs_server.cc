@@ -1,51 +1,78 @@
 #include <iostream>
+#include <sstream>
 #include <fstream>
-#include <memory>
+#include <iomanip>
+#include <string>
 
-#include <grpc/grpc.h>
-#include <grpcpp/security/server_credentials.h>
-#include <grpcpp/server.h>
-#include <grpcpp/server_builder.h>
-#include <grpcpp/server_context.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
-#include "afs.grpc.pb.h"
-#include "afs.pb.h"
+#include <errno.h>
 
 using namespace cs739;
 using namespace grpc;
 
-
-class SendFileImpl final : public cs739::SendFile::Service {
+class AFSServiceImpl final : public cs739::AFS::Service {
 public:
-    explicit SendFileImpl() {}
-    
-    Status Send(ServerContext* context, grpc::ServerReader<Data>* reader, Reply* out) {
-        std::cout << "vv [Receiving file]\n";
+    explicit AFSServiceImpl() {}
 
-        Data data;
-        uint64_t size = 0;
-        std::ofstream file("received_file", std::ios::out | std::ios::binary | std::ios::trunc);
-        while (reader->Read(&data)) {
-            size += data.b().size();
-            // std::cout << "this data.b() size: " << data.b().size() << ", accumulated size: " << size << "\n";
-            file << data.b();
+    Status Stat(ServerContext* context, Filepath* request, StatContent* response) {
+        std::cout << "Stat call received for filepath: " << request->filepath() << std::endl;
+
+        struct stat stat_content;
+        int res = stat(request->filepath(), &stat_content);
+
+        if(res == -1) {
+            response->set_return_code(-1);
+            response->set_error_number(errno);
+        } else {
+            response->set_return_code(0);
+            response->set_error_number();
+
+            response->set_st_dev(stat_content.st_dev);
+            response->set_st_ino(stat_content.st_ino);
+            response->set_st_mode(stat_content.st_mode);
+            response->set_st_nlink(stat_content.st_nlink);
+            response->set_st_uid(stat_content.st_uid);
+            response->set_st_gid(stat_content.st_gid);
+            response->set_st_rdev(stat_content.st_rdev);
+            response->set_st_size(stat_content.st_size);
+            response->set_st_blksize(stat_content.st_blksize);
+            response->set_st_blocks(stat_content.st_blocks);
+            response->set_st_atim(stat_content.st_atim);
+            response->set_st_mtim(stat_content.st_mtim);
+            response->set_st_ctim(stat_content.st_ctim);
         }
-        file.close();
-        out->set_r(size);
-        // out->set_md5sum(exec("md5sum received_file").substr(0, 32));
         return Status::OK;
     }
+
+    Status GetMeta(ServerContext* context, Filepath* request, Meta* response) {
+        std::cout << "Meta call received for filepath: " << request->filepath() << std::endl;
+
+        struct stat stat_content;
+        int res = stat(request->filepath(), &stat_content);
+
+        if(res == -1) {
+            response->set_file_exists(-1);
+        } else {
+            response->set_file_exists(1);
+            response->set_timestamp(stat_content.st_mtim);
+        }
+        return Status::OK;
+    }
+
 };
 
 void RunServer() {
     std::string server_address("0.0.0.0:53706");
-    SendFileImpl service;
-    
+    AFSServiceImpl service;
+
     grpc::ServerBuilder builder;
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
     std::unique_ptr<Server> server(builder.BuildAndStart());
-    std::cout << "Server SendFileImpl listening on " << server_address << std::endl;
+    std::cout << "Server AFSServiceImpl listening on " << server_address << std::endl;
     server->Wait();
 }
 
