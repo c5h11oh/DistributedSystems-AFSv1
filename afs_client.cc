@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <string>
 #include <unordered_map>
+#include <chrono>
 // standard c
 #include <unistd.h>
 #include <stdlib.h> // malloc
@@ -40,7 +41,6 @@ using namespace cs739;
 std::unique_ptr<AFS::Stub> stub_;
 
 struct afs_data_t {
-    grpc::ClientContext context;
     std::string cache_root; // must contain forward slash at the end.
     std::unique_ptr<AFS::Stub> stub_;
     std::unordered_map<std::string, std::string> last_modified; // path to st_mtim
@@ -62,13 +62,34 @@ std::string cachepath(const char* rel_path) {
     return AFS_DATA->cache_root + ss.str();
 }
 
+void set_deadline(ClientContext &context) {
+    std::chrono::system_clock::time_point tp = std::chrono::system_clock::now() + 
+        std::chrono::seconds(5);
+    context.set_deadline(tp);
+}
+
+// int afs_opendir(const char *path, struct fuse_file_info *fi)
+// {
+//     DIR *dp;
+//     int retstat = 0;
+
+//     std::cerr << "afs_opendir" << std::endl;
+//     dp = opendir((AFS_DATA->rootdir + std::string(path)).c_str());
+//     if (dp == NULL)
+//     	retstat = -errno;
+//     fi->fh = (intptr_t) dp;
+//     return retstat;
+// }
+
 int afs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset,
 	       struct fuse_file_info *fi)
 {
     Filepath filepath;
     LsResult ls_result;
+    ClientContext context;
     filepath.set_filepath(std::string(path));
-    AFS_DATA->stub_->Ls(&(AFS_DATA->context), filepath, &ls_result);
+    set_deadline(context);
+    AFS_DATA->stub_->Ls(&context, filepath, &ls_result);
     for (int i = 0; i < ls_result.d_name_size(); ++i) {
         if (filler(buf, ls_result.d_name(i).c_str(), NULL, 0) != 0) {
             return -ENOMEM;
@@ -95,7 +116,9 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         }
         
         StatContent stat_content;
-        AFS_DATA->stub_->Stat(&(AFS_DATA->context), filepath, &stat_content);
+        ClientContext context;
+        set_deadline(context);
+        AFS_DATA->stub_->Stat(&context, filepath, &stat_content);
 
         if ( stat_content.st_mtim() == AFS_DATA->last_modified[path_str]) {
             // can use cache
@@ -111,8 +134,10 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         }
     }
     MetaContent msg;
+    ClientContext context;
+    set_deadline(context);
     std::unique_ptr<ClientReader<MetaContent>> reader(
-        AFS_DATA->stub_->GetContent(&(AFS_DATA->context), filepath));
+        AFS_DATA->stub_->GetContent(&context, filepath));
     reader->Read(&msg);
     if (msg.file_exists()) {
         AFS_DATA->last_modified[path_str] = msg.timestamp();
@@ -140,9 +165,10 @@ int afs_release(const char *path, struct fuse_file_info *fi)
     close(fi->fh);
     Meta meta;
     FilepathContent content;
+    ClientContext context;
     content.set_filepath(std::string(path));
-
-    auto writer = AFS_DATA->stub_->Write(&(AFS_DATA->context), &meta);
+    set_deadline(context);
+    auto writer = AFS_DATA->stub_->Write(&context, &meta);
     std::ifstream file(cachepath(path), std::ios::in);
     std::string buf(BUFSIZE, '\0');
     while (file.read(&buf[0], BUFSIZE)) {
@@ -183,8 +209,10 @@ int afs_mknod(const char *path, mode_t mode, dev_t dev)
 
     Meta meta;
     FilepathContent content;
+    ClientContext context;
     content.set_filepath(std::string(path));
-    auto writer = AFS_DATA->stub_->Write(&(AFS_DATA->context), &meta);
+    set_deadline(context);
+    auto writer = AFS_DATA->stub_->Write(&context, &meta);
     std::string buf;
     content.set_b(buf);
     writer->Write(content);
@@ -206,12 +234,14 @@ int afs_unlink(const char *path)
     std::string path_str(path);
     Filepath fp;
     Response res;
+    ClientContext context;
     fp.set_filepath(path_str);
 
     // remove cached file
     unlink(cachepath(path).c_str());
     AFS_DATA->last_modified.erase(std::string(path));    
-    AFS_DATA->stub_->Unlink(&(AFS_DATA->context), fp, &res);
+    set_deadline(context);
+    AFS_DATA->stub_->Unlink(&context, fp, &res);
     if (res.return_code() < 0) {
         return -res.error_number();
     }
@@ -222,15 +252,14 @@ int afs_getattr(const char *path, struct stat *stbuf)
 {
     Filepath request;
     StatContent response;
+    ClientContext context;
     request.set_filepath(std::string(path));
-	AFS_DATA->stub_->Stat(&(AFS_DATA->context), request, &response);
-    
-    int res = 0;
+    set_deadline(context);
+	AFS_DATA->stub_->Stat(&context, request, &response);
 
 	if (response.return_code() < 0) {
         return -response.error_number();
     }
-
     stbuf->st_atim = *((timespec *)response.st_atim().c_str());
     stbuf->st_mtim = *((timespec *)response.st_mtim().c_str());
     stbuf->st_ctim = *((timespec *)response.st_ctim().c_str());
@@ -253,9 +282,11 @@ int afs_mkdir(const char *path, mode_t mode)
     std::string path_str(path);
     Filepath fp;
     Response res;
+    ClientContext context;
     fp.set_filepath(path_str);
 
-    AFS_DATA->stub_->Mkdir(&(AFS_DATA->context), fp, &res);
+    set_deadline(context);
+    AFS_DATA->stub_->Mkdir(&context, fp, &res);
     if (res.return_code() < 0) {
         return -res.error_number();
     }
@@ -267,9 +298,11 @@ int afs_rmdir(const char *path)
     std::string path_str(path);
     Filepath fp;
     Response res;
+    ClientContext context;
     fp.set_filepath(path_str);
 
-    AFS_DATA->stub_->Rmdir(&(AFS_DATA->context), fp, &res);
+    set_deadline(context);
+    AFS_DATA->stub_->Rmdir(&context, fp, &res);
     if (res.return_code() < 0) {
         return -res.error_number();
     }
@@ -307,16 +340,17 @@ void print_usage(char* prog_name) {
 int main(int argc, char *argv[])
 {
     int opt;
-    char** mount_point = new char*[3];
+    char** mount_point = new char*[4];
     if (!mount_point) {
         std::cerr << "C++ new failed.\n";
         exit(1);
     }
     mount_point[0] = argv[0];
-    mount_point[1] = mount_point[2] = NULL;
+    mount_point[1] = mount_point[2] = mount_point[3] = NULL;
+    int fuse_main_argc = 2;
     char* cache_root = NULL;
     std::string server_addr = DEFAULT_SERVER;
-    while ((opt = getopt(argc, argv, "hs:c:m:")) != -1) {
+    while ((opt = getopt(argc, argv, "hs:c:m:d")) != -1) {
         switch (opt) {
             case 'h':
                 print_usage(argv[0]);
@@ -330,8 +364,13 @@ int main(int argc, char *argv[])
             case 'm':
                 mount_point[1] = optarg;
                 break;
+            case 'd':
+                mount_point[2] = "-d";
+                ++fuse_main_argc;
+                break;
             case '?':
             default:
+                std::cerr << "opt: " << opt << "\n";
                 std::cerr << argv[0] << ": invalid argument\n";
                 print_usage(argv[0]);
                 exit(1);
@@ -375,8 +414,9 @@ int main(int argc, char *argv[])
     afs_oper.read		= afs_read;
     afs_oper.write		= afs_write;
     afs_oper.release	= afs_release;
+    // afs_oper.opendir    = afs_opendir;
     afs_oper.readdir	= afs_readdir;
-    int rc = fuse_main(2, mount_point, &afs_oper, afs_data);
+    int rc = fuse_main(fuse_main_argc, mount_point, &afs_oper, afs_data);
     delete mount_point;
     return rc;
 }
