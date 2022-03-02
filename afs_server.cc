@@ -53,6 +53,8 @@ public:
         return Status::OK;
     }
     Status GetContent(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::grpc::ServerWriter< ::cs739::MetaContent>* writer){
+        log("GetContent");
+        
         std::string filepath(AFS_ROOT_DIR + request->filepath());
         std::ifstream file(filepath, std::ios::in);
         MetaContent msg;
@@ -82,6 +84,8 @@ public:
         return Status::OK;
     }
     Status Ls(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::LsResult* response){
+        log("Ls");
+        
         DIR *dir;
         dirent *entry;
 
@@ -95,6 +99,8 @@ public:
         return Status::OK;
     }
     Status Write(::grpc::ServerContext* context, ::grpc::ServerReader< ::cs739::FilepathContent>* reader, ::cs739::Meta* response){
+        log("Write");
+        
         FilepathContent msg;
         reader->Read(&msg);
         std::string filepath (AFS_ROOT_DIR + msg.filepath());
@@ -112,10 +118,12 @@ public:
         return Status::OK;
     }
     Status Stat(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::StatContent* response){
+        log("Stat");
+
         std::cout << "Stat call received for filepath: " << request->filepath() << std::endl;
 
         struct stat stat_content;
-        int res = stat(request->filepath().c_str(), &stat_content);
+        int res = stat(getServerFilepath(request->filepath()).c_str(), &stat_content);
 
         if(res == -1) {
             response->set_return_code(-1);
@@ -144,28 +152,30 @@ public:
         return Status::OK;
     }
     Status Unlink(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Response* response){
+        log("Unlink");
+        response->set_return_code(0);
         if(unlink(getServerFilepath(request->filepath()).c_str()) == -1) {
             response->set_return_code(-1);
             response->set_error_number(errno);
         }
-        response->set_return_code(1);
         return Status::OK;
     }
     Status Rmdir(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Response* response){
+        log("Rmdir");
+        response->set_return_code(0);
         if(rmdir(getServerFilepath(request->filepath()).c_str()) == -1) {
             response->set_return_code(-1);
             response->set_error_number(errno);
         }
-        response->set_return_code(1);
         return Status::OK;
     }
     Status Mkdir(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Response* response){
-        int mode=1; // TODO 
-        if(mkdir(getServerFilepath(request->filepath()).c_str(), mode) == -1) {
+        log("Mkdir");
+        response->set_return_code(0);
+        if(mkdir(getServerFilepath(request->filepath()).c_str(), 00777) == -1) {
             response->set_return_code(-1);
             response->set_error_number(errno);
         }
-        response->set_return_code(1);
         return Status::OK;
     }
 private:
@@ -174,6 +184,9 @@ private:
     }
     const std::string getServerFilepath(const char* filepath) {
         return getServerFilepath(std::string(filepath));
+    }
+    void log(char* msg) {
+        std::cout << "[log] " << msg << std::endl;
     }
 };
 
