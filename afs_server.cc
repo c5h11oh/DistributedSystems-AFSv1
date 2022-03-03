@@ -190,8 +190,8 @@ private:
     }
 };
 
-void RunServer() {
-    std::string server_address("0.0.0.0:53706");
+void RunServer(std::string port) {
+    std::string server_address(std::string("0.0.0.0:") + port);
     AFSServiceImpl service;
 
     grpc::ServerBuilder builder;
@@ -203,7 +203,7 @@ void RunServer() {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
+    if (argc < 2) {
         std::cerr << "usage: " << argv[0] << " <AFS root directory>\n";
         exit(1);
     }
@@ -214,7 +214,9 @@ int main(int argc, char** argv) {
     }
     AFS_ROOT_DIR = argv[1];
     if (AFS_ROOT_DIR.back() != '/') { AFS_ROOT_DIR += '/'; }
-    RunServer();
+    std::string port;
+    port = (argc > 2) ? argv[2] : "53706";
+    RunServer(port);
     
     return 0;
 }
