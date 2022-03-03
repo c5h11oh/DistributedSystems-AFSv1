@@ -68,19 +68,6 @@ void set_deadline(ClientContext &context) {
     context.set_deadline(tp);
 }
 
-// int afs_opendir(const char *path, struct fuse_file_info *fi)
-// {
-//     DIR *dp;
-//     int retstat = 0;
-
-//     std::cerr << "afs_opendir" << std::endl;
-//     dp = opendir((AFS_DATA->rootdir + std::string(path)).c_str());
-//     if (dp == NULL)
-//     	retstat = -errno;
-//     fi->fh = (intptr_t) dp;
-//     return retstat;
-// }
-
 int afs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset,
 	       struct fuse_file_info *fi)
 {
@@ -192,6 +179,14 @@ int afs_release(const char *path, struct fuse_file_info *fi)
         std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
     }
     return 0;
+}
+
+int afs_fsync(const char *path, int datasync, struct fuse_file_info *fi)
+{
+    int rc = fsync(fi->fh);
+    if (rc < 0)
+        return -errno;
+    return rc;
 }
 
 int afs_mknod(const char *path, mode_t mode, dev_t dev)
@@ -414,7 +409,7 @@ int main(int argc, char *argv[])
     afs_oper.read		= afs_read;
     afs_oper.write		= afs_write;
     afs_oper.release	= afs_release;
-    // afs_oper.opendir    = afs_opendir;
+    afs_oper.fsync  	= afs_fsync;
     afs_oper.readdir	= afs_readdir;
     int rc = fuse_main(fuse_main_argc, mount_point, &afs_oper, afs_data);
     delete mount_point;
