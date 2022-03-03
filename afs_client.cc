@@ -321,6 +321,23 @@ int afs_write(const char *path, const char *buf, size_t size, off_t offset,
     return rc;
 }
 
+int afs_ftruncate(const char *path, off_t offset, struct fuse_file_info *fi)
+{
+    int rc = ftruncate(fi->fh, offset);
+    if (rc < 0)
+        return -errno;
+    
+    return 0;
+}
+
+int afs_truncate(const char *path, off_t newsize)
+{
+    int rc = truncate(cachepath(path).c_str(), newsize);
+    if (rc < 0)
+        return -errno;
+    return 0;
+}
+
 static struct fuse_operations afs_oper;
 
 void print_usage(char* prog_name) {
@@ -411,6 +428,8 @@ int main(int argc, char *argv[])
     afs_oper.release	= afs_release;
     afs_oper.fsync  	= afs_fsync;
     afs_oper.readdir	= afs_readdir;
+    afs_oper.ftruncate  = afs_ftruncate;
+    afs_oper.truncate   = afs_truncate;
     int rc = fuse_main(fuse_main_argc, mount_point, &afs_oper, afs_data);
     delete mount_point;
     return rc;

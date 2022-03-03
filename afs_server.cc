@@ -12,6 +12,8 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
+// openssl library
+#include <openssl/sha.h>
 
 // grpc
 #include <grpc/grpc.h>
@@ -27,6 +29,8 @@ using namespace cs739;
 using namespace grpc;
 
 #define BUFSIZE 65500
+#define FS_ROOT "fs_root"
+#define CACHE "cache"
 std::string AFS_ROOT_DIR;
 
 class AFSServiceImpl final : public cs739::AFS::Service {
@@ -55,7 +59,7 @@ public:
     Status GetContent(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::grpc::ServerWriter< ::cs739::MetaContent>* writer){
         log("GetContent");
         
-        std::string filepath(AFS_ROOT_DIR + request->filepath());
+        std::string filepath = getServerFilepath(request->filepath());
         std::ifstream file(filepath, std::ios::in);
         MetaContent msg;
         struct stat sb;
@@ -89,6 +93,7 @@ public:
         DIR *dir;
         dirent *entry;
 
+        std::cout << getServerFilepath(request->filepath()) << std::endl;
         dir = opendir(getServerFilepath(request->filepath()).c_str());
         while(entry = readdir(dir)) {
             const char *d_name = entry->d_name;
@@ -103,7 +108,7 @@ public:
         
         FilepathContent msg;
         reader->Read(&msg);
-        std::string filepath (AFS_ROOT_DIR + msg.filepath());
+        std::string filepath = getServerFilepath(msg.filepath(), true);
         std::ofstream file(filepath, std::ios::trunc | std::ios::out);
         if (!file.is_open()) {
             Status s(StatusCode::NOT_FOUND, "Cannot open file");
@@ -115,6 +120,8 @@ public:
         }
         file.close();
         
+        rename(getServerFilepath(msg.filepath(), true).c_str(), getServerFilepath(msg.filepath(), false).c_str());
+
         return Status::OK;
     }
     Status Stat(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::StatContent* response){
@@ -179,14 +186,29 @@ public:
         return Status::OK;
     }
 private:
-    const std::string getServerFilepath(std::string filepath) {
-        return (AFS_ROOT_DIR + filepath);
+    const std::string getServerFilepath(std::string filepath,  bool is_cache_filepath = false) {
+        if (is_cache_filepath)
+            return (AFS_ROOT_DIR + CACHE + "/" + hashFilepath(filepath));
+        else
+            return (AFS_ROOT_DIR + FS_ROOT + "/" + filepath);
     }
-    const std::string getServerFilepath(const char* filepath) {
-        return getServerFilepath(std::string(filepath));
+    const std::string getServerFilepath(const char* filepath, bool is_cache_filepath = false) {
+        return getServerFilepath(std::string(filepath), is_cache_filepath);
     }
     void log(char* msg) {
         std::cout << "[log] " << msg << std::endl;
+    }
+    const std::string hashFilepath(std::string filepath) {
+            unsigned char hash[SHA256_DIGEST_LENGTH];
+            SHA256_CTX sha256;
+            SHA256_Init(&sha256);
+            SHA256_Update(&sha256, filepath.c_str(), filepath.size());
+            SHA256_Final(hash, &sha256);
+            std::stringstream ss;
+            for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+                ss << std::hex << std::setw(2) << std::setfill('0') << ((int)hash[i]);
+            }
+            return ss.str();
     }
 };
 
@@ -214,6 +236,19 @@ int main(int argc, char** argv) {
     }
     AFS_ROOT_DIR = argv[1];
     if (AFS_ROOT_DIR.back() != '/') { AFS_ROOT_DIR += '/'; }
+
+    if (mkdir(std::string(AFS_ROOT_DIR).append(CACHE).c_str(), 00777) < 0 &&
+        errno != 17) {
+        perror("mkdir");
+        exit(1);
+    }
+
+    if (mkdir(std::string(AFS_ROOT_DIR).append(FS_ROOT).c_str(), 00777) < 0 &&
+        errno != 17) {
+        perror("mkdir");
+        exit(1);
+    }
+
     std::string port;
     port = (argc > 2) ? argv[2] : "53706";
     RunServer(port);
