@@ -61,17 +61,15 @@ public:
         snapshot_frequency = 10; // after how many logs, make a snapshot and clear the log
         
         // read the snapshot and log to get the most recent state
-        std::vector<std::string> filenames{std::string(cache_root).append("/snapshot.txt"), std::string(cache_root).append("/log.txt")};
+        std::vector<std::string> filenames{std::string(cache_root).append("/is_dirty_snapshot.txt"), std::string(cache_root).append("/is_dirty_log.txt")};
         for (std::string& filename : filenames) {
             std::cout << filename << std::endl;
             if (std::ifstream is{filename, std::ios::in | std::ios::ate}) {
                 auto size = is.tellg();
                 is.seekg(0);
-                std::cout << "eof bit set? " << is.eof() << std::endl;
                 std::string buf(100, '\0');
                 if (size > 0)
                     while (is.tellg() != -1 && is.tellg() != size) {
-                        std::cout << is.tellg() << std::endl;
                         std::getline(is, buf);
                         if (buf.size() != 66) {
                             std::cout << "offset=" << is.tellg() << std::endl;
@@ -135,15 +133,15 @@ public:
         std::string hashed_fn = hashpath(filename.c_str());
         if (table.count(hashed_fn)) {
             table.erase(hashed_fn);
-            log << hashed_fn << " 2"; // 2 means erase the entry
+            log << hashed_fn << " 2" << std::endl; // 2 means erase the entry
             log.flush();
         }
     }
 private:
     bool do_snapshot() {
         std::cout << "[log] enter snapshot" << std::endl;
-        std::string old_name(std::string(cache_root) + "/snapshot.txt.tmp");
-        std::string new_name(std::string(cache_root) + "/snapshot.txt");
+        std::string old_name(std::string(cache_root) + "/is_dirty_snapshot.txt.tmp");
+        std::string new_name(std::string(cache_root) + "/is_dirty_snapshot.txt");
 
         if (std::ofstream os{old_name, std::ios::out | std::ios::trunc}) {
             for (auto& entry : table) {
@@ -155,9 +153,7 @@ private:
             rename(old_name.c_str(), new_name.c_str());
             // truncate the log
             log.close();
-            std::cout << "[log] log closed" << std::endl;
-            log.open((std::string(cache_root).append("/log.txt")), std::ios::out | std::ios::trunc);
-            std::cout << "[log] log opened? " << (log.is_open() ? "true" : "false") << std::endl;
+            log.open((std::string(cache_root).append("/is_dirty_log.txt")), std::ios::out | std::ios::trunc);
             return true;
         }
         return false;
@@ -169,12 +165,142 @@ private:
     int snapshot_frequency;
 };
 
+class last_modified_t {
+public:
+    last_modified_t(std::string& cache_root) : cache_root(cache_root) {
+        snapshot_frequency = 10; // after how many logs, make a snapshot and clear the log
+        
+        // read the snapshot and log to get the most recent state
+        std::vector<std::string> filenames{std::string(cache_root).append("/last_modified_snapshot.txt"), std::string(cache_root).append("/last_modified_log.txt")};
+        for (std::string& filename : filenames) {
+            std::cout << filename << std::endl;
+            if (std::ifstream is{filename, std::ios::in | std::ios::ate}) {
+                auto size = is.tellg();
+                is.seekg(0);
+                std::string fn(64, '\0'), ts(sizeof(struct timespec), '\0'); // filename, timespec
+                if (size > 0)
+                    while (is.tellg() != -1 && is.tellg() != size) {
+                        std::cout << is.tellg() << std::endl;
+                        std::getline(is, fn);
+                        if (fn.size() != 64) {
+                            std::cout << "incorrect last_modified persistent file -- fn" << is.tellg() << std::endl;
+                            assert(false);
+                        }
+                        is.read(&ts[0], sizeof(struct timespec));
+                        std::cout << is.get() << std::endl; // strip '\n'. should print 10
+                        
+                        if (ts == std::string(sizeof(struct timespec), 255) && table.count(fn)) 
+                            table.erase(fn);
+                        else if (ts.size() != sizeof(struct timespec)) {
+                            std::cout << "incorrect last_modified persistent file -- ts" << is.tellg() << std::endl;
+                            assert(false);
+                        }
+                        else
+                            table[fn] = ts;
+                    }
+            }
+            print_table();
+        }
+        log.open((filenames[1]), std::ios::out | std::ios::app);
+    }
+
+    std::string get(const char* filename) {
+        return get(std::string(filename));
+    }
+    
+    std::string get(std::string filename) {
+        // return "not found" if not found in table
+        std::string hashed_fn = hashpath(filename.c_str());
+        return (table.count(hashed_fn) ? table[hashed_fn] : "not found");
+    }
+
+    void set(const char* filename, std::string state) {
+        set(std::string(filename), state);
+    }
+
+    void set(std::string filename, std::string state) {
+        std::string hashed_fn = hashpath(filename.c_str());
+        // if nothing is changed, do nothing
+        if (table.count(hashed_fn) && table[hashed_fn] == state) { return; }
+
+        // otherwise, set it in memory and flush log
+        table[hashed_fn] = state;
+        log << hashed_fn << std::endl << state << std::endl;
+        log.flush();
+
+        // if there are a lot of logs, make snapshot
+        if ((counter = (counter + 1) % snapshot_frequency) == 0)
+            do_snapshot();
+    }
+
+    void erase(const char* filename) {
+        erase(std::string(filename));
+    }
+
+    void erase(std::string filename) {
+        std::string hashed_fn = hashpath(filename.c_str());
+        if (table.count(hashed_fn)) {
+            table.erase(hashed_fn);
+            log << hashed_fn << std::endl << std::string(sizeof(struct timespec), 255) << std::endl; // 0xFF means erase
+            log.flush();
+        }
+    }
+
+    std::size_t count(std::string filename) {
+        return table.count(filename);
+    }
+
+    std::size_t size() {
+        return table.size();
+    }
+
+    void print_table() {
+        std::cout << "=========================\n";
+        std::cout << "last_modified table\n";
+        for (auto item : table) {
+            const struct timespec* ts = (const struct timespec*)item.second.c_str();
+            std::cout << "\t" << item.first << " = {" << ts->tv_sec << ", " << ts->tv_nsec << "}\n";
+        }
+        std::cout << "=========================\n";
+    }
+private:
+    bool do_snapshot() {
+        std::cout << "[log] last_modified snapshot start" << std::endl;
+        std::string old_name(std::string(cache_root) + "/last_modified_snapshot.txt.tmp");
+        std::string new_name(std::string(cache_root) + "/last_modified_snapshot.txt");
+
+        if (std::ofstream os{old_name, std::ios::out | std::ios::trunc}) {
+            for (auto& entry : table) {
+                os << entry.first << std::endl << entry.second << std::endl;
+                // os.write(hashpath(entry.first.c_str()).c_str(), 32);
+                // os.write(entry.second ? "1" : "0", 1);
+            }
+            os.close();
+            rename(old_name.c_str(), new_name.c_str());
+            // truncate the log
+            log.close();
+            std::cout << "[log] log closed" << std::endl;
+            log.open((std::string(cache_root).append("/last_modified_log.txt")), std::ios::out | std::ios::trunc);
+            std::cout << "[log] log opened? " << (log.is_open() ? "true" : "false") << std::endl;
+            std::cout << "[log] last_modified snapshot finish" << std::endl;
+            return true;
+        }
+        return false;
+    }
+    std::unordered_map<std::string, std::string> table;
+    std::fstream log;
+    std::string cache_root;
+    int counter;
+    int snapshot_frequency;
+};
+
 class afs_data_t {
 public:
-    afs_data_t(std::string cache_root) : cache_root(cache_root), is_dirty{cache_root} {}
+    afs_data_t(std::string cache_root) : cache_root(cache_root), is_dirty{cache_root}, last_modified{cache_root} {}
     std::string cache_root; // must contain forward slash at the end.
     std::unique_ptr<AFS::Stub> stub_;
-    std::unordered_map<std::string, std::string> last_modified; // path to st_mtim
+    // std::unordered_map<std::string, std::string> last_modified; // path to st_mtim
+    last_modified_t last_modified;
     is_dirty_t is_dirty;
 };
 
@@ -209,13 +335,13 @@ std::unordered_map<std::string, std::string> readFileIntoMap(std::string cache_r
     return map;
 }
 
-void writeMapIntoFile() {
-    std::ofstream ofile(cachepath(AFS_DATA->cache_root, LAST_MODIFIED_FILE), std::ios::trunc);
-    for(const auto& kv : AFS_DATA->last_modified) {
-        ofile << kv.first << kv.second << '\n';
-    }
-    ofile.close();
-}
+// void writeMapIntoFile() {
+//     std::ofstream ofile(cachepath(AFS_DATA->cache_root, LAST_MODIFIED_FILE), std::ios::trunc);
+//     for(const auto& kv : AFS_DATA->last_modified) {
+//         ofile << kv.first << kv.second << '\n';
+//     }
+//     ofile.close();
+// }
 
 void set_deadline(ClientContext &context) {
     std::chrono::system_clock::time_point tp = std::chrono::system_clock::now() + 
@@ -250,7 +376,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
     if (AFS_DATA->last_modified.count(path_str) == 1) {
         // cache exists 
         // check if it is locally created file
-        if (AFS_DATA->last_modified[path_str] == LOCAL_CREAT_FILE) {
+        if (AFS_DATA->last_modified.get(path_str) == LOCAL_CREAT_FILE) {
             fi->fh = open(cachepath(path).c_str(), fi->flags);
             if (fi->fh < 0) {
                 return -errno;
@@ -263,7 +389,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         set_deadline(context);
         AFS_DATA->stub_->Stat(&context, filepath, &stat_content);
 
-        if ( stat_content.st_mtim() == AFS_DATA->last_modified[path_str]) {
+        if ( stat_content.st_mtim() == AFS_DATA->last_modified.get(path_str)) {
             // can use cache
             fi->fh = open(cachepath(path).c_str(), fi->flags);
             if (fi->fh < 0) {
@@ -286,8 +412,6 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         AFS_DATA->stub_->GetContent(&context, filepath));
     reader->Read(&msg);
     if (msg.file_exists()) {
-        AFS_DATA->last_modified[path_str] = msg.timestamp();
-        writeMapIntoFile();
         // open file with O_TRUNC
         std::ofstream ofile(cachepath(path),
             std::ios::binary | std::ios::out | std::ios::trunc);
@@ -297,16 +421,14 @@ int afs_open(const char *path, struct fuse_file_info *fi)
             ofile << msg.b();
         }
         ofile.close(); // the cache is persisted
-        AFS_DATA->last_modified[path_str] = msg.timestamp();
+        AFS_DATA->last_modified.set(path_str, msg.timestamp());
+        // writeMapIntoFile();
     }
     else {
-        AFS_DATA->last_modified[path_str] = LOCAL_CREAT_FILE;
-        writeMapIntoFile();
+        AFS_DATA->last_modified.set(path_str, LOCAL_CREAT_FILE);
+        // writeMapIntoFile();
         close(creat(cachepath(path).c_str(), 00777));
     }
-    // // make a hard link at server_version_cache/
-    // if (link(cachepath(path).c_str(), cachepath(path, true).c_str()) < 0)
-    //     perror("(hard)link in afs_open");
 
     // set is_dirty to clean
     AFS_DATA->is_dirty.set(path, 0);
@@ -345,12 +467,14 @@ int afs_release(const char *path, struct fuse_file_info *fi)
     Status status = writer->Finish();
     if (status.ok()) {
         AFS_DATA->is_dirty.set(path, false); // now the copy is "clean"
-        AFS_DATA->last_modified[std::string(path)] = meta.timestamp();
-        writeMapIntoFile();
+        AFS_DATA->last_modified.set(std::string(path), meta.timestamp());
+        // writeMapIntoFile();
     } else {
         std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
         return EIO;
     }
+
+    AFS_DATA->last_modified.print_table();
     return 0;
 }
 
@@ -399,8 +523,8 @@ int afs_mknod(const char *path, mode_t mode, dev_t dev)
 
     Status status = writer->Finish();
     if (status.ok()) {
-        AFS_DATA->last_modified[std::string(path)] = meta.timestamp();
-        writeMapIntoFile();
+        AFS_DATA->last_modified.set(std::string(path), meta.timestamp());
+        // writeMapIntoFile();
     } else {
         std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
         return EIO;
@@ -604,7 +728,7 @@ int main(int argc, char *argv[])
     afs_data_t* afs_data = new afs_data_t(std::string(cache_root));
     afs_data->stub_ = AFS::NewStub(grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials()));
     if (afs_data->cache_root.back() != '/') { afs_data->cache_root += '/'; }
-    afs_data->last_modified = readFileIntoMap(cache_root);
+    // afs_data->last_modified = readFileIntoMap(cache_root);
     std::cout<<"[STARTUP-------------------]"<< afs_data->last_modified.size() <<"\n"; 
 
     afs_oper.getattr    = afs_getattr;
