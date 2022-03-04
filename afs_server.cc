@@ -119,6 +119,11 @@ public:
             file << msg.b();
         }
         file.close();
+
+        struct stat sb;
+        stat(filepath.c_str(), &sb);
+        std::string ts(reinterpret_cast<char *>(&sb.st_mtim), sizeof(sb.st_mtim));
+        response->set_timestamp(ts);
         
         rename(getServerFilepath(msg.filepath(), true).c_str(), getServerFilepath(msg.filepath(), false).c_str());
 
