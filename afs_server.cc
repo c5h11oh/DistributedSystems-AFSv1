@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
+#include <pthread.h>
 // openssl library
 #include <openssl/sha.h>
 
@@ -35,7 +36,9 @@ std::string AFS_ROOT_DIR;
 
 class AFSServiceImpl final : public cs739::AFS::Service {
 public:
-    explicit AFSServiceImpl() {}
+    explicit AFSServiceImpl() {
+        pthread_mutex_init(&lock, NULL);
+    }
 
     Status GetMeta(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::Meta* response) {
         // std::cout << "Meta call received for filepath: " << request->filepath() << std::endl;
@@ -109,6 +112,7 @@ public:
         FilepathContent msg;
         reader->Read(&msg);
         std::string filepath = getServerFilepath(msg.filepath(), true);
+        pthread_mutex_lock(&lock);
         std::ofstream file(filepath, std::ios::trunc | std::ios::out);
         if (!file.is_open()) {
             Status s(StatusCode::NOT_FOUND, "Cannot open file");
@@ -119,7 +123,7 @@ public:
             file << msg.b();
         }
         file.close();
-
+        pthread_mutex_unlock(&lock);
         struct stat sb;
         stat(filepath.c_str(), &sb);
         std::string ts(reinterpret_cast<char *>(&sb.st_mtim), sizeof(sb.st_mtim));
@@ -215,6 +219,8 @@ private:
             }
             return ss.str();
     }
+private:
+    pthread_mutex_t lock;
 };
 
 void RunServer(std::string port) {
