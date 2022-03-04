@@ -38,15 +38,7 @@ using namespace cs739;
 #define LOCAL_CREAT_FILE "locally_generated_file"
 #define DEFAULT_SERVER "127.0.0.1:53706"
 
-std::unique_ptr<AFS::Stub> stub_;
-
-struct afs_data_t {
-    std::string cache_root; // must contain forward slash at the end.
-    std::unique_ptr<AFS::Stub> stub_;
-    std::unordered_map<std::string, std::string> last_modified; // path to st_mtim
-};
-
-std::string cachepath(const char* rel_path) {
+std::string hashpath(const char* rel_path) {
     // local cached filename is SHA-256 hash of the path
     // referencing https://stackoverflow.com/questions/2262386/generate-sha256-with-openssl-and-c
     unsigned char hash[SHA256_DIGEST_LENGTH];
@@ -58,8 +50,117 @@ std::string cachepath(const char* rel_path) {
     for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
         ss << std::hex << std::setw(2) << std::setfill('0') << ((int)hash[i]);
     }
-    std::cout << "hashed hex string is " << ss.str() << std::endl; // debug
-    return AFS_DATA->cache_root + ss.str();
+    return ss.str();
+}
+
+class is_dirty_t {
+public:
+    is_dirty_t(std::string& cache_root) : cache_root(cache_root) {
+        snapshot_frequency = 10; // after how many logs, make a snapshot and clear the log
+        
+        // read the snapshot and log to get the most recent state
+        std::vector<std::string> filenames{std::string(cache_root).append("snapshot.txt"), std::string(cache_root).append("log.txt")};
+        for (std::string& filename : filenames) {
+            if (std::ifstream is{filename, std::ios::in | std::ios::ate}) {
+                auto size = is.tellg() / 33;
+                is.seekg(0);
+                std::string fn(32, '\0'), state(1, '0');
+                for (int i = 0; i < size; ++i) {
+                    is.read(&fn[0], 32);
+                    is.read(&state[0], 1);
+                    if (state[0] == '2') {
+                        table.erase(fn);
+                    } else {
+                        table[fn] = (state[0] - '0');
+                    }
+                }
+            }
+        }
+        log.open((filenames[1]), std::ios::out | std::ios::app);
+        std::cout << "[log] log is open? " << (log.is_open() ? "true" : "false") << std::endl;
+    }
+
+    bool get(const char* filename) {
+        return get(std::string(filename));
+    }
+    
+    bool get(std::string filename) {
+        // return true if filename exists in table and is_dirty is true
+        std::string hashed_fn = hashpath(filename.c_str());
+        return table.count(hashed_fn) && table[hashed_fn];
+    }
+
+    void set(const char* filename, bool state) {
+        set(std::string(filename), state);
+    }
+
+    void set(std::string filename, bool state) {
+        std::string hashed_fn = hashpath(filename.c_str());
+        // if nothing is changed, do nothing
+        if (table.count(hashed_fn) && table[hashed_fn] == state) { return; }
+
+        // otherwise, set it in memory and flush log
+        table[hashed_fn] = state;
+        log << hashed_fn << (state ? '1' : '0');
+        log.flush();
+
+        // if there are a lot of logs, make snapshot
+        if ((counter = (counter + 1) % snapshot_frequency) == 0)
+            do_snapshot();
+    }
+
+    void erase(const char* filename) {
+        erase(std::string(filename));
+    }
+
+    void erase(std::string filename) {
+        std::string hashed_fn = hashpath(filename.c_str());
+        if (table.count(hashed_fn)) {
+            table.erase(hashed_fn);
+            log << hashed_fn << "2"; // 2 means erase the entry
+            log.flush();
+        }
+    }
+private:
+    bool do_snapshot() {
+        std::cout << "[log] enter snapshot" << std::endl;
+        std::string old_name(std::string(cache_root) + "snapshot.txt.tmp");
+        std::string new_name(std::string(cache_root) + "snapshot.txt");
+
+        if (std::ofstream os{old_name, std::ios::out | std::ios::trunc}) {
+            for (auto& entry : table) {
+                os.write(hashpath(entry.first.c_str()).c_str(), 32);
+                os.write(entry.second ? "1" : "0", 1);
+            }
+            os.close();
+            rename(old_name.c_str(), new_name.c_str());
+            // truncate the log
+            log.close();
+            std::cout << "[log] log closed" << std::endl;
+            log.open((std::string(cache_root).append("log.txt")), std::ios::out | std::ios::trunc);
+            std::cout << "[log] log opened? " << (log.is_open() ? "true" : "false") << std::endl;
+            return true;
+        }
+        return false;
+    }
+    std::unordered_map<std::string, bool> table;
+    std::fstream log;
+    std::string cache_root;
+    int counter;
+    int snapshot_frequency;
+};
+
+class afs_data_t {
+public:
+    afs_data_t(std::string cache_root) : cache_root(cache_root), is_dirty{cache_root} {}
+    std::string cache_root; // must contain forward slash at the end.
+    std::unique_ptr<AFS::Stub> stub_;
+    std::unordered_map<std::string, std::string> last_modified; // path to st_mtim
+    is_dirty_t is_dirty;
+};
+
+std::string cachepath(const char* rel_path) {
+    return AFS_DATA->cache_root + hashpath(rel_path);
 }
 
 void set_deadline(ClientContext &context) {
@@ -116,10 +217,13 @@ int afs_open(const char *path, struct fuse_file_info *fi)
             return 0;
         }
         else {
-            // can't use cache. delete last_modified entry
-            AFS_DATA->last_modified.erase(path_str);
+            // can't use cache.
+            AFS_DATA->last_modified.erase(path_str); // delete last_modified entry. 
+            unlink(cachepath(path).c_str()); // delete cached file
         }
     }
+    
+    // get file from server, or create a new one
     MetaContent msg;
     ClientContext context;
     set_deadline(context);
@@ -129,7 +233,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
     if (msg.file_exists()) {
         AFS_DATA->last_modified[path_str] = msg.timestamp();
         // open file with O_TRUNC
-        std::ofstream ofile(AFS_DATA->cache_root + path_str,
+        std::ofstream ofile(cachepath(path),
             std::ios::binary | std::ios::out | std::ios::trunc);
         // TODO: check failure
         ofile << msg.b();
@@ -141,6 +245,14 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         AFS_DATA->last_modified[path_str] = LOCAL_CREAT_FILE;
         close(creat(cachepath(path).c_str(), 00777));
     }
+    // // make a hard link at server_version_cache/
+    // if (link(cachepath(path).c_str(), cachepath(path, true).c_str()) < 0)
+    //     perror("(hard)link in afs_open");
+
+    // set is_dirty to clean
+    AFS_DATA->is_dirty.set(path, 0);
+
+    // give user the file
     fi->fh = open(cachepath(path).c_str(), fi->flags);
     if (fi->fh < 0)
         return -errno;
@@ -173,6 +285,7 @@ int afs_release(const char *path, struct fuse_file_info *fi)
 
     Status status = writer->Finish();
     if (status.ok()) {
+        AFS_DATA->is_dirty.set(path, false); // now the copy is "clean"
         AFS_DATA->last_modified[std::string(path)] = meta.timestamp();
     } else {
         // TODO: handle error
@@ -232,9 +345,12 @@ int afs_unlink(const char *path)
     ClientContext context;
     fp.set_filepath(path_str);
 
-    // remove cached file
-    unlink(cachepath(path).c_str());
-    AFS_DATA->last_modified.erase(std::string(path));    
+    // cache: remove file, last_modified, is_dirty
+    unlink(cachepath(path).c_str()); // remove cached file
+    AFS_DATA->last_modified.erase(std::string(path));
+    AFS_DATA->is_dirty.erase(path);
+
+    // grpc unlink
     set_deadline(context);
     AFS_DATA->stub_->Unlink(&context, fp, &res);
     if (res.return_code() < 0) {
@@ -315,6 +431,7 @@ int afs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse
 int afs_write(const char *path, const char *buf, size_t size, off_t offset,
 	     struct fuse_file_info *fi)
 {
+    AFS_DATA->is_dirty.set(path, true);
     ssize_t rc = pwrite(fi->fh, buf, size, offset);
     if (rc < 0)
         return -errno;
@@ -399,7 +516,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
     
-    // check cache_root and mount_point[0] directory exists
+    // check cache_root and mount_point[1] directory exists
     struct stat sb;
     if (stat(cache_root, &sb) != 0 || !S_ISDIR(sb.st_mode)) {
         std::cerr << argv[0] << ": cached files directory does not exist.\n";
@@ -412,10 +529,22 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    afs_data_t* afs_data = new afs_data_t;
+    afs_data_t* afs_data = new afs_data_t(std::string(cache_root));
 	afs_data->stub_ = AFS::NewStub(grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials()));
-    afs_data->cache_root = cache_root;
     if (afs_data->cache_root.back() != '/') { afs_data->cache_root += '/'; }
+    
+    // // create server_version_cache and client_cache directory
+    // if (mkdir(std::string(afs_data->cache_root).append("server_version_cache").c_str(), 00777) < 0 &&
+    //     errno != 17) {
+    //     perror("mkdir");
+    //     exit(1);
+    // }
+
+    // if (mkdir(std::string(afs_data->cache_root).append("client_cache").c_str(), 00777) < 0 &&
+    //     errno != 17) {
+    //     perror("mkdir");
+    //     exit(1);
+    // }
 
     afs_oper.getattr	= afs_getattr;
     afs_oper.mknod		= afs_mknod;
