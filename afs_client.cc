@@ -59,21 +59,37 @@ public:
         snapshot_frequency = 10; // after how many logs, make a snapshot and clear the log
         
         // read the snapshot and log to get the most recent state
-        std::vector<std::string> filenames{std::string(cache_root).append("snapshot.txt"), std::string(cache_root).append("log.txt")};
+        std::vector<std::string> filenames{std::string(cache_root).append("/snapshot.txt"), std::string(cache_root).append("/log.txt")};
         for (std::string& filename : filenames) {
+            std::cout << filename << std::endl;
             if (std::ifstream is{filename, std::ios::in | std::ios::ate}) {
-                auto size = is.tellg() / 33;
+                auto size = is.tellg();
                 is.seekg(0);
-                std::string fn(32, '\0'), state(1, '0');
-                for (int i = 0; i < size; ++i) {
-                    is.read(&fn[0], 32);
-                    is.read(&state[0], 1);
-                    if (state[0] == '2') {
-                        table.erase(fn);
-                    } else {
-                        table[fn] = (state[0] - '0');
+                std::cout << "eof bit set? " << is.eof() << std::endl;
+                std::string buf(100, '\0');
+                if (size > 0)
+                    while (is.tellg() != -1 && is.tellg() != size) {
+                        std::cout << is.tellg() << std::endl;
+                        std::getline(is, buf);
+                        if (buf.size() != 66) {
+                            std::cout << "offset=" << is.tellg() << std::endl;
+                            assert(false);
+                        }
+                        switch (buf.back()) {
+                            case '2':
+                                table.erase(buf.substr(0, 64));
+                                break;
+                            case '1':
+                                table[buf.substr(0, 64)] = true;
+                                break;
+                            case '0':
+                                table[buf.substr(0, 64)] = false;
+                                break;
+                            default:
+                                std::cerr << "error in reading is_dirty snapshot and log\n";
+
+                        }
                     }
-                }
             }
         }
         log.open((filenames[1]), std::ios::out | std::ios::app);
@@ -101,7 +117,7 @@ public:
 
         // otherwise, set it in memory and flush log
         table[hashed_fn] = state;
-        log << hashed_fn << (state ? '1' : '0');
+        log << hashed_fn << " " << (state ? '1' : '0') << std::endl;
         log.flush();
 
         // if there are a lot of logs, make snapshot
@@ -117,27 +133,28 @@ public:
         std::string hashed_fn = hashpath(filename.c_str());
         if (table.count(hashed_fn)) {
             table.erase(hashed_fn);
-            log << hashed_fn << "2"; // 2 means erase the entry
+            log << hashed_fn << " 2"; // 2 means erase the entry
             log.flush();
         }
     }
 private:
     bool do_snapshot() {
         std::cout << "[log] enter snapshot" << std::endl;
-        std::string old_name(std::string(cache_root) + "snapshot.txt.tmp");
-        std::string new_name(std::string(cache_root) + "snapshot.txt");
+        std::string old_name(std::string(cache_root) + "/snapshot.txt.tmp");
+        std::string new_name(std::string(cache_root) + "/snapshot.txt");
 
         if (std::ofstream os{old_name, std::ios::out | std::ios::trunc}) {
             for (auto& entry : table) {
-                os.write(hashpath(entry.first.c_str()).c_str(), 32);
-                os.write(entry.second ? "1" : "0", 1);
+                os << entry.first << " " << (entry.second ? "1" : "0") << std::endl;
+                // os.write(hashpath(entry.first.c_str()).c_str(), 32);
+                // os.write(entry.second ? "1" : "0", 1);
             }
             os.close();
             rename(old_name.c_str(), new_name.c_str());
             // truncate the log
             log.close();
             std::cout << "[log] log closed" << std::endl;
-            log.open((std::string(cache_root).append("log.txt")), std::ios::out | std::ios::trunc);
+            log.open((std::string(cache_root).append("/log.txt")), std::ios::out | std::ios::trunc);
             std::cout << "[log] log opened? " << (log.is_open() ? "true" : "false") << std::endl;
             return true;
         }
@@ -231,7 +248,6 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         AFS_DATA->stub_->GetContent(&context, filepath));
     reader->Read(&msg);
     if (msg.file_exists()) {
-        AFS_DATA->last_modified[path_str] = msg.timestamp();
         // open file with O_TRUNC
         std::ofstream ofile(cachepath(path),
             std::ios::binary | std::ios::out | std::ios::trunc);
@@ -240,6 +256,8 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         while (reader->Read(&msg)) {
             ofile << msg.b();
         }
+        ofile.close(); // the cache is persisted
+        AFS_DATA->last_modified[path_str] = msg.timestamp();
     }
     else {
         AFS_DATA->last_modified[path_str] = LOCAL_CREAT_FILE;
