@@ -256,9 +256,10 @@ int afs_mknod(const char *path, mode_t mode, dev_t dev)
 
     Meta meta;
     FilepathContent content;
+    ClientContext context2;
     content.set_filepath(std::string(path));
-    set_deadline(context);
-    auto writer = AFS_DATA->stub_->Write(&context, &meta);
+    set_deadline(context2);
+    auto writer = AFS_DATA->stub_->Write(&context2, &meta);
     std::string buf;
     content.set_b(buf);
     writer->Write(content);
