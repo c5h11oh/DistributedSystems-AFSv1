@@ -1,0 +1,33 @@
+- folder structure under cache folder
+    - NOT ANY MORE! dirty and clean cache folders
+    - NOW called "server_version_cache" ("clean") and "client_cache" (dirty)
+    - we always read "client_cache". initially, these are two pointers pointing to the same inode file. on the first write, actually copy the file so they are two separate files. client always read/write to "client_cache".
+    - and actually, if the underlying FS is journaled, we don't even need "server_version_cache". It is never used.
+- new state: is_dirty
+- put fh in AFS_DATA
+- when write
+    - check is_dirty
+        - if 0 -> 1
+            - copy clean cache to dirty cache
+            - write dirty cache
+        - if 1
+            - write dirty cache
+- when close
+    - receive rpc success response => get the server's last modification time
+    - copy from dirty to clean first
+    - change is_dirty from 1 to 0
+    - save last modification time
+
+- when open
+    - check if we can use our cache. how: check saved last modification time with server's
+        - Yes: is_dirty?
+            - anyway, 
+        - No:
+            - if is_dirty is 1: set it to 0 and rm dirty_cache file
+            - download from server, save to clean cache
+
+- limit # or size of cache files 
+
+- TODO
+    - persist last modifitcation time
+    - dirty cache file and clean cache file
