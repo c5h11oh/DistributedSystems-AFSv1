@@ -30,6 +30,7 @@ using grpc::ClientContext;
 using grpc::ClientWriter;
 using grpc::ClientReader;
 using grpc::Status;
+using grpc::StatusCode;
 using namespace cs739;
 
 #define PATH_MAX 4096
@@ -37,6 +38,7 @@ using namespace cs739;
 #define AFS_DATA ((struct afs_data_t *) fuse_get_context()->private_data)
 #define LOCAL_CREAT_FILE "locally_generated_file"
 #define DEFAULT_SERVER "127.0.0.1:53706"
+#define LAST_MODIFIED_FILE "last_modified"
 
 std::unique_ptr<AFS::Stub> stub_;
 
@@ -62,6 +64,41 @@ std::string cachepath(const char* rel_path) {
     return AFS_DATA->cache_root + ss.str();
 }
 
+std::string cachepath(std::string cache_root, const char* rel_path) {
+    // local cached filename is SHA-256 hash of the path
+    // referencing https://stackoverflow.com/questions/2262386/generate-sha256-with-openssl-and-c
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_CTX sha256;
+    SHA256_Init(&sha256);
+    SHA256_Update(&sha256, rel_path, strlen(rel_path));
+    SHA256_Final(hash, &sha256);
+    std::stringstream ss;
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << ((int)hash[i]);
+    }
+    std::cout << "hashed hex string is " << ss.str() << std::endl; // debug
+    return cache_root + ss.str();
+}
+
+std::unordered_map<std::string, std::string> readFileIntoMap(std::string cache_root) {
+    std::ifstream file(cachepath(cache_root, LAST_MODIFIED_FILE));         // TODO
+    std::unordered_map<std::string, std::string> map;
+    std::string key, value;
+    while ( file >> key >> value ) {
+        map[key] = value; 
+    }
+    file.close();
+    return map;
+}
+
+void writeMapIntoFile() {
+    std::ofstream ofile(cachepath(AFS_DATA->cache_root, LAST_MODIFIED_FILE), std::ios::trunc);
+    for(const auto& kv : AFS_DATA->last_modified) {
+        ofile << kv.first << kv.second << '\n';
+    }
+    ofile.close();
+}
+
 void set_deadline(ClientContext &context) {
     std::chrono::system_clock::time_point tp = std::chrono::system_clock::now() + 
         std::chrono::seconds(5);
@@ -69,11 +106,12 @@ void set_deadline(ClientContext &context) {
 }
 
 int afs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset,
-	       struct fuse_file_info *fi)
+           struct fuse_file_info *fi)
 {
     Filepath filepath;
     LsResult ls_result;
     ClientContext context;
+    
     filepath.set_filepath(std::string(path));
     set_deadline(context);
     AFS_DATA->stub_->Ls(&context, filepath, &ls_result);
@@ -128,6 +166,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
     reader->Read(&msg);
     if (msg.file_exists()) {
         AFS_DATA->last_modified[path_str] = msg.timestamp();
+        writeMapIntoFile();
         // open file with O_TRUNC
         std::ofstream ofile(AFS_DATA->cache_root + path_str,
             std::ios::binary | std::ios::out | std::ios::trunc);
@@ -139,6 +178,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
     }
     else {
         AFS_DATA->last_modified[path_str] = LOCAL_CREAT_FILE;
+        writeMapIntoFile();
         close(creat(cachepath(path).c_str(), 00777));
     }
     fi->fh = open(cachepath(path).c_str(), fi->flags);
@@ -174,9 +214,10 @@ int afs_release(const char *path, struct fuse_file_info *fi)
     Status status = writer->Finish();
     if (status.ok()) {
         AFS_DATA->last_modified[std::string(path)] = meta.timestamp();
+        writeMapIntoFile();
     } else {
-        // TODO: handle error
         std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
+        return EIO;
     }
     return 0;
 }
@@ -191,8 +232,19 @@ int afs_fsync(const char *path, int datasync, struct fuse_file_info *fi)
 
 int afs_mknod(const char *path, mode_t mode, dev_t dev)
 {
-    int rc;
+    Filepath filepath;
+    filepath.set_filepath(std::string(path));
+    StatContent stat_content;
+    ClientContext context;
+    set_deadline(context);
+    AFS_DATA->stub_->Stat(&context, filepath, &stat_content);
 
+    if(stat_content.return_code() == 0) {
+        std::cerr << "File already exists." << std::endl;
+        return EEXIST;
+    }
+
+    int rc;
     // creat a local file
     rc = open(cachepath(path).c_str(), O_CREAT | O_EXCL | O_WRONLY, mode);
     if (rc >= 0) {
@@ -204,7 +256,6 @@ int afs_mknod(const char *path, mode_t mode, dev_t dev)
 
     Meta meta;
     FilepathContent content;
-    ClientContext context;
     content.set_filepath(std::string(path));
     set_deadline(context);
     auto writer = AFS_DATA->stub_->Write(&context, &meta);
@@ -216,9 +267,10 @@ int afs_mknod(const char *path, mode_t mode, dev_t dev)
     Status status = writer->Finish();
     if (status.ok()) {
         AFS_DATA->last_modified[std::string(path)] = meta.timestamp();
+        writeMapIntoFile();
     } else {
-        // TODO: handle error
         std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
+        return EIO;
     }
 
     return 0;
@@ -250,9 +302,9 @@ int afs_getattr(const char *path, struct stat *stbuf)
     ClientContext context;
     request.set_filepath(std::string(path));
     set_deadline(context);
-	AFS_DATA->stub_->Stat(&context, request, &response);
+    AFS_DATA->stub_->Stat(&context, request, &response);
 
-	if (response.return_code() < 0) {
+    if (response.return_code() < 0) {
         return -response.error_number();
     }
     stbuf->st_atim = *((timespec *)response.st_atim().c_str());
@@ -313,7 +365,7 @@ int afs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse
 }
 
 int afs_write(const char *path, const char *buf, size_t size, off_t offset,
-	     struct fuse_file_info *fi)
+         struct fuse_file_info *fi)
 {
     ssize_t rc = pwrite(fi->fh, buf, size, offset);
     if (rc < 0)
@@ -413,24 +465,27 @@ int main(int argc, char *argv[])
     }
 
     afs_data_t* afs_data = new afs_data_t;
-	afs_data->stub_ = AFS::NewStub(grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials()));
+    afs_data->stub_ = AFS::NewStub(grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials()));
     afs_data->cache_root = cache_root;
     if (afs_data->cache_root.back() != '/') { afs_data->cache_root += '/'; }
+    afs_data->last_modified = readFileIntoMap(cache_root);
+    std::cout<<"[STARTUP-------------------]"<< afs_data->last_modified.size() <<"\n"; 
 
-    afs_oper.getattr	= afs_getattr;
-    afs_oper.mknod		= afs_mknod;
-    afs_oper.mkdir		= afs_mkdir;
-    afs_oper.unlink		= afs_unlink;
-    afs_oper.rmdir		= afs_rmdir;
-    afs_oper.open		= afs_open;
-    afs_oper.read		= afs_read;
-    afs_oper.write		= afs_write;
-    afs_oper.release	= afs_release;
-    afs_oper.fsync  	= afs_fsync;
-    afs_oper.readdir	= afs_readdir;
+    afs_oper.getattr    = afs_getattr;
+    afs_oper.mknod      = afs_mknod;
+    afs_oper.mkdir      = afs_mkdir;
+    afs_oper.unlink     = afs_unlink;
+    afs_oper.rmdir      = afs_rmdir;
+    afs_oper.open       = afs_open;
+    afs_oper.read       = afs_read;
+    afs_oper.write      = afs_write;
+    afs_oper.release    = afs_release;
+    afs_oper.fsync      = afs_fsync;
+    afs_oper.readdir    = afs_readdir;
     afs_oper.ftruncate  = afs_ftruncate;
     afs_oper.truncate   = afs_truncate;
     int rc = fuse_main(fuse_main_argc, mount_point, &afs_oper, afs_data);
     delete mount_point;
     return rc;
 }
+
