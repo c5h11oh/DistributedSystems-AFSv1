@@ -673,17 +673,18 @@ void print_usage(char* prog_name) {
 int main(int argc, char *argv[])
 {
     int opt;
-    char** mount_point = new char*[4];
-    if (!mount_point) {
+    char** fuse_main_argv = new char*[10];
+    if (!fuse_main_argv) {
         std::cerr << "C++ new failed.\n";
         exit(1);
     }
-    mount_point[0] = argv[0];
-    mount_point[1] = mount_point[2] = mount_point[3] = NULL;
-    int fuse_main_argc = 2;
+    fuse_main_argv[0] = argv[0];
+    memset(&fuse_main_argv[1], 0, sizeof(char *) * 9);
+    // fuse_main_argv[1] = fuse_main_argv[2] = fuse_main_argv[3] = NULL;
+    int fuse_main_argc = 1, mount_dir_arg_index = -1;
     char* cache_root = NULL;
     std::string server_addr = DEFAULT_SERVER;
-    while ((opt = getopt(argc, argv, "hs:c:m:d")) != -1) {
+    while ((opt = getopt(argc, argv, "hs:c:m:df")) != -1) {
         switch (opt) {
             case 'h':
                 print_usage(argv[0]);
@@ -695,11 +696,14 @@ int main(int argc, char *argv[])
                 cache_root = optarg;
                 break;
             case 'm':
-                mount_point[1] = optarg;
+                mount_dir_arg_index = fuse_main_argc;
+                fuse_main_argv[fuse_main_argc++] = optarg;
                 break;
             case 'd':
-                mount_point[2] = "-d";
-                ++fuse_main_argc;
+                fuse_main_argv[fuse_main_argc++] = "-d";
+                break;
+            case 'f':
+                fuse_main_argv[fuse_main_argc++] = "-f";
                 break;
             case '?':
             default:
@@ -714,7 +718,7 @@ int main(int argc, char *argv[])
         std::cerr << "type -h for usage.\n";
         exit(1);
     }
-    if (!mount_point[1]) {
+    if (mount_dir_arg_index < 0) {
         std::cerr << argv[0] << ": use -m to specify mount point directory.\n";
         std::cerr << "type -h for usage.\n";
         exit(1);
@@ -727,7 +731,7 @@ int main(int argc, char *argv[])
         std::cerr << "type -h for usage.\n";
         exit(1);
     }
-    if (stat(mount_point[1], &sb) != 0 || !S_ISDIR(sb.st_mode)) {
+    if (stat(fuse_main_argv[mount_dir_arg_index], &sb) != 0 || !S_ISDIR(sb.st_mode)) {
         std::cerr << argv[0] << ": mount point directory does not exist.\n";
         std::cerr << "type -h for usage.\n";
         exit(1);
@@ -752,8 +756,8 @@ int main(int argc, char *argv[])
     afs_oper.readdir    = afs_readdir;
     afs_oper.ftruncate  = afs_ftruncate;
     afs_oper.truncate   = afs_truncate;
-    int rc = fuse_main(fuse_main_argc, mount_point, &afs_oper, afs_data);
-    delete mount_point;
+    int rc = fuse_main(fuse_main_argc, fuse_main_argv, &afs_oper, afs_data);
+    delete fuse_main_argv;
     return rc;
 }
 
