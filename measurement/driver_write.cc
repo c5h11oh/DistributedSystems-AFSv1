@@ -11,14 +11,14 @@
 
 int main(int argc, char *argv[])
 {
-    std::string buf(atoi(argv[2]), '0'); 
+    std::string buf(atoi(argv[2]), '0');
 
     int fd;
     struct timespec start, end, open_diff, close_diff;
     long open_ns, close_ns;
 
     clock_gettime(CLOCK_MONOTONIC, &start);
-    fd = open(argv[1], O_TRUNC);
+    fd = open(argv[1], O_TRUNC | O_RDWR | O_CREAT, 00777);
     clock_gettime(CLOCK_MONOTONIC, &end);
     sub_timespec(start, end, &open_diff);
     open_ns = open_diff.tv_sec * NS_PER_SECOND + open_diff.tv_nsec;
@@ -27,7 +27,6 @@ int main(int argc, char *argv[])
         perror("open");
         exit(1);
     }
-
 
     write(fd, buf.c_str(), buf.size());
 
