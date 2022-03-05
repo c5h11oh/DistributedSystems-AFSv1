@@ -344,9 +344,9 @@ std::unordered_map<std::string, std::string> readFileIntoMap(std::string cache_r
 // }
 
 void set_deadline(ClientContext &context) {
-    std::chrono::system_clock::time_point tp = std::chrono::system_clock::now() + 
-        std::chrono::seconds(5);
-    context.set_deadline(tp);
+    // std::chrono::system_clock::time_point tp = std::chrono::system_clock::now() + 
+    //     std::chrono::seconds(5);
+    // context.set_deadline(tp);
 }
 
 int afs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset,
