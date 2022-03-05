@@ -443,39 +443,47 @@ int afs_open(const char *path, struct fuse_file_info *fi)
 int afs_release(const char *path, struct fuse_file_info *fi)
 {
     close(fi->fh);
-    Meta meta;
-    FilepathContent content;
-    ClientContext context;
-    content.set_filepath(std::string(path));
-    set_deadline(context);
-    auto writer = AFS_DATA->stub_->Write(&context, &meta);
-    std::ifstream file(cachepath(path), std::ios::in);
-    std::string buf(BUFSIZE, '\0');
-    while (file.read(&buf[0], BUFSIZE)) {
-        content.set_b(buf);
-        if (writer->Write(content))
-            break;
-    }
-    if (file.eof()) {
-        buf.resize(file.gcount());
-        content.set_b(buf);
-        writer->Write(content);
-    }
-    writer->WritesDone();
-    file.close();
+    if (AFS_DATA->is_dirty.get(path)) {
+        Meta meta;
+        FilepathContent content;
+        ClientContext context;
+        content.set_filepath(std::string(path));
+        set_deadline(context);
+        auto writer = AFS_DATA->stub_->Write(&context, &meta);
+        std::ifstream file(cachepath(path), std::ios::in);
+        if (file.is_open() == false) {
+            std::cerr << "afs_release: file not opened.\n";
+            exit(1);
+        }
+        std::string buf(BUFSIZE, '\0');
+        while (file.read(&buf[0], BUFSIZE)) {
+            content.set_b(buf);
+            if (!writer->Write(content))
+                break;
+        }
+        if (file.eof()) {
+            buf.resize(file.gcount());
+            content.set_b(buf);
+            writer->Write(content);
+        }
+        writer->WritesDone();
+        file.close();
 
-    Status status = writer->Finish();
-    if (status.ok()) {
-        AFS_DATA->is_dirty.set(path, false); // now the copy is "clean"
-        AFS_DATA->last_modified.set(std::string(path), meta.timestamp());
-        // writeMapIntoFile();
-    } else {
-        std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
-        return EIO;
-    }
+        Status status = writer->Finish();
+        if (status.ok()) {
+            AFS_DATA->is_dirty.set(path, false); // now the copy is "clean"
+            AFS_DATA->last_modified.set(std::string(path), meta.timestamp());
+            // writeMapIntoFile();
+        } else {
+            std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
+            return EIO;
+        }
 
-    AFS_DATA->last_modified.print_table();
-    return 0;
+        AFS_DATA->last_modified.print_table();
+        return 0;
+    }
+    else 
+        return 0;
 }
 
 int afs_fsync(const char *path, int datasync, struct fuse_file_info *fi)
