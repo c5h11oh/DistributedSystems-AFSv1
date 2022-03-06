@@ -1,0 +1,6 @@
+cd
+sudo mkfs.ext4 -F /dev/xvda4
+mkdir journal mount
+sudo mount -t ext4 /dev/xvda4 ~/journal/ -o data=journal,noatime
+sudo chown c5h11oh ./journal
+mkdir -p journal/cache
