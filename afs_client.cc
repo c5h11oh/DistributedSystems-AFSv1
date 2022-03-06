@@ -55,116 +55,6 @@ std::string hashpath(const char* rel_path) {
     return ss.str();
 }
 
-class is_dirty_t {
-public:
-    is_dirty_t(std::string& cache_root) : cache_root(cache_root) {
-        snapshot_frequency = 10; // after how many logs, make a snapshot and clear the log
-        
-        // read the snapshot and log to get the most recent state
-        std::vector<std::string> filenames{std::string(cache_root).append("/is_dirty_snapshot.txt"), std::string(cache_root).append("/is_dirty_log.txt")};
-        for (std::string& filename : filenames) {
-            std::cout << filename << std::endl;
-            if (std::ifstream is{filename, std::ios::in | std::ios::ate}) {
-                auto size = is.tellg();
-                is.seekg(0);
-                std::string buf(100, '\0');
-                if (size > 0)
-                    while (is.tellg() != -1 && is.tellg() != size) {
-                        std::getline(is, buf);
-                        if (buf.size() != 66) {
-                            std::cout << "offset=" << is.tellg() << std::endl;
-                            assert(false);
-                        }
-                        switch (buf.back()) {
-                            case '2':
-                                table.erase(buf.substr(0, 64));
-                                break;
-                            case '1':
-                                table[buf.substr(0, 64)] = true;
-                                break;
-                            case '0':
-                                table[buf.substr(0, 64)] = false;
-                                break;
-                            default:
-                                std::cerr << "error in reading is_dirty snapshot and log\n";
-
-                        }
-                    }
-            }
-        }
-        log.open((filenames[1]), std::ios::out | std::ios::app);
-        std::cout << "[log] log is open? " << (log.is_open() ? "true" : "false") << std::endl;
-    }
-
-    bool get(const char* filename) {
-        return get(std::string(filename));
-    }
-    
-    bool get(std::string filename) {
-        // return true if filename exists in table and is_dirty is true
-        std::string hashed_fn = hashpath(filename.c_str());
-        return table.count(hashed_fn) && table[hashed_fn];
-    }
-
-    void set(const char* filename, bool state) {
-        set(std::string(filename), state);
-    }
-
-    void set(std::string filename, bool state) {
-        std::string hashed_fn = hashpath(filename.c_str());
-        // if nothing is changed, do nothing
-        if (table.count(hashed_fn) && table[hashed_fn] == state) { return; }
-
-        // otherwise, set it in memory and flush log
-        table[hashed_fn] = state;
-        log << hashed_fn << " " << (state ? '1' : '0') << std::endl;
-        log.flush();
-
-        // if there are a lot of logs, make snapshot
-        if ((counter = (counter + 1) % snapshot_frequency) == 0)
-            do_snapshot();
-    }
-
-    void erase(const char* filename) {
-        erase(std::string(filename));
-    }
-
-    void erase(std::string filename) {
-        std::string hashed_fn = hashpath(filename.c_str());
-        if (table.count(hashed_fn)) {
-            table.erase(hashed_fn);
-            log << hashed_fn << " 2" << std::endl; // 2 means erase the entry
-            log.flush();
-        }
-    }
-private:
-    bool do_snapshot() {
-        std::cout << "[log] enter snapshot" << std::endl;
-        std::string old_name(std::string(cache_root) + "/is_dirty_snapshot.txt.tmp");
-        std::string new_name(std::string(cache_root) + "/is_dirty_snapshot.txt");
-
-        if (std::ofstream os{old_name, std::ios::out | std::ios::trunc}) {
-            for (auto& entry : table) {
-                os << entry.first << " " << (entry.second ? "1" : "0") << std::endl;
-                // os.write(hashpath(entry.first.c_str()).c_str(), 32);
-                // os.write(entry.second ? "1" : "0", 1);
-            }
-            os.close();
-            rename(old_name.c_str(), new_name.c_str());
-            // truncate the log
-            log.close();
-            log.open((std::string(cache_root).append("/is_dirty_log.txt")), std::ios::out | std::ios::trunc);
-            return true;
-        }
-        return false;
-    }
-    std::unordered_map<std::string, bool> table;
-    std::fstream log;
-    std::string cache_root;
-    int counter;
-    int snapshot_frequency;
-};
-
 class last_modified_t {
 public:
     last_modified_t(std::string& cache_root) : cache_root(cache_root) {
@@ -296,12 +186,11 @@ private:
 
 class afs_data_t {
 public:
-    afs_data_t(std::string cache_root) : cache_root(cache_root), is_dirty{cache_root}, last_modified{cache_root} {}
+    afs_data_t(std::string cache_root) : cache_root(cache_root), last_modified{cache_root} {}
     std::string cache_root; // must contain forward slash at the end.
     std::unique_ptr<AFS::Stub> stub_;
     // std::unordered_map<std::string, std::string> last_modified; // path to st_mtim
     last_modified_t last_modified;
-    is_dirty_t is_dirty;
 };
 
 std::string cachepath(const char* rel_path) {
@@ -445,9 +334,6 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         close(creat(cachepath(path).c_str(), 00777));
     }
 
-    // set is_dirty to clean
-    AFS_DATA->is_dirty.set(path, 0);
-
     // give user the file
     fi->fh = open(cachepath(path).c_str(), fi->flags);
     if (fi->fh < 0)
@@ -459,8 +345,8 @@ int afs_release(const char *path, struct fuse_file_info *fi)
 {
     std::cout << "[log] afs_release start\n";
     close(fi->fh);
-    if (AFS_DATA->is_dirty.get(path)) {
-        std::cout << "[log] afs_release dirty file. upload\n";
+    if (true) {
+        std::cout << "[log] afs_release upload\n";
         struct timespec t, u;
         clock_gettime(CLOCK_MONOTONIC, &t);
         Meta meta;
@@ -493,9 +379,7 @@ int afs_release(const char *path, struct fuse_file_info *fi)
         // std::cout << "release crash point (after uploding data)\n";
         // std::cin >> pause;
         if (status.ok()) {
-            AFS_DATA->is_dirty.set(path, false); // now the copy is "clean"
             AFS_DATA->last_modified.set(std::string(path), meta.timestamp());
-            // writeMapIntoFile();
         } else {
             std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
             return EIO;
@@ -503,12 +387,8 @@ int afs_release(const char *path, struct fuse_file_info *fi)
         clock_gettime(CLOCK_MONOTONIC, &u);
 
         // AFS_DATA->last_modified.print_table();
-        std::cout << "[log] afs_release: dirty file upload finished. took " << 
+        std::cout << "[log] afs_release: file upload finished. took " << 
         ((u.tv_sec - t.tv_sec) * 1000000000 + (u.tv_nsec - t.tv_nsec)) << "ns.\n";
-        return 0;
-    }
-    else {
-        std::cout << "[log] afs_release: clean file. direct return.\n";
         return 0;
     }
 }
@@ -579,7 +459,6 @@ int afs_unlink(const char *path)
     // cache: remove file, last_modified, is_dirty
     unlink(cachepath(path).c_str()); // remove cached file
     AFS_DATA->last_modified.erase(std::string(path));
-    AFS_DATA->is_dirty.erase(path);
 
     // grpc unlink
     set_deadline(context);
@@ -662,7 +541,6 @@ int afs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse
 int afs_write(const char *path, const char *buf, size_t size, off_t offset,
          struct fuse_file_info *fi)
 {
-    AFS_DATA->is_dirty.set(path, true);
     ssize_t rc = pwrite(fi->fh, buf, size, offset);
     if (rc < 0)
         return -errno;
