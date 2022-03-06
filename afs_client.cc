@@ -461,7 +461,7 @@ int afs_release(const char *path, struct fuse_file_info *fi)
         auto writer = AFS_DATA->stub_->Write(&context, &meta);
         std::ifstream file(cachepath(path), std::ios::in);
         if (file.is_open() == false) {
-            std::cerr << "afs_release: file not opened.\n";
+            std::cerr << "[log] afs_release: file not opened.\n";
             exit(1);
         }
         std::string buf(BUFSIZE, '\0');
@@ -490,12 +490,12 @@ int afs_release(const char *path, struct fuse_file_info *fi)
         clock_gettime(CLOCK_MONOTONIC, &u);
 
         // AFS_DATA->last_modified.print_table();
-        std::cout << "afs_release: dirty file upload finished. took " << 
+        std::cout << "[log] afs_release: dirty file upload finished. took " << 
         ((u.tv_sec - t.tv_sec) * 1000000000 + (u.tv_nsec - t.tv_nsec)) << "ns.\n";
         return 0;
     }
     else {
-        std::cout << "afs_release: clean file. direct return.\n";
+        std::cout << "[log] afs_release: clean file. direct return.\n";
         return 0;
     }
 }
