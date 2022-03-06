@@ -381,6 +381,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
             if (fi->fh < 0) {
                 return -errno;
             }
+            std::cout << "is locally created file\n";
             return 0;
         }
         
@@ -395,6 +396,8 @@ int afs_open(const char *path, struct fuse_file_info *fi)
             if (fi->fh < 0) {
                 return -errno;
             }
+            std::cout << "hash path: " << cachepath(path).c_str() << std::endl;
+            std::cout << "can use local cache\n";
             return 0;
         }
         else {
@@ -423,8 +426,10 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         ofile.close(); // the cache is persisted
         AFS_DATA->last_modified.set(path_str, msg.timestamp());
         // writeMapIntoFile();
+        std::cout << "download from server\n";
     }
     else {
+        std::cout << "create a new one\n";
         AFS_DATA->last_modified.set(path_str, LOCAL_CREAT_FILE);
         // writeMapIntoFile();
         close(creat(cachepath(path).c_str(), 00777));
@@ -442,8 +447,12 @@ int afs_open(const char *path, struct fuse_file_info *fi)
 
 int afs_release(const char *path, struct fuse_file_info *fi)
 {
+    std::cout << "[log] afs_release start\n";
     close(fi->fh);
     if (AFS_DATA->is_dirty.get(path)) {
+        std::cout << "[log] afs_release dirty file. upload\n";
+        struct timespec t, u;
+        clock_gettime(CLOCK_MONOTONIC, &t);
         Meta meta;
         FilepathContent content;
         ClientContext context;
@@ -478,12 +487,17 @@ int afs_release(const char *path, struct fuse_file_info *fi)
             std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
             return EIO;
         }
+        clock_gettime(CLOCK_MONOTONIC, &u);
 
-        AFS_DATA->last_modified.print_table();
+        // AFS_DATA->last_modified.print_table();
+        std::cout << "afs_release: dirty file upload finished. took " << 
+        ((u.tv_sec - t.tv_sec) * 1000000000 + (u.tv_nsec - t.tv_nsec)) << "ns.\n";
         return 0;
     }
-    else 
+    else {
+        std::cout << "afs_release: clean file. direct return.\n";
         return 0;
+    }
 }
 
 int afs_fsync(const char *path, int datasync, struct fuse_file_info *fi)
