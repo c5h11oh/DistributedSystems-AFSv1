@@ -78,7 +78,13 @@ public:
         msg.set_timestamp(ts);
         
         std::string buf(BUFSIZE, '\0');
+        // int count(0);
         while (file.read(&buf[0], BUFSIZE)) {
+            // if (count == 10) {
+            //     std::cout << "server crashes during sending file to client\n";
+            //     assert(false);
+            // }
+            // ++count;
             msg.set_b(buf);
             if (!writer->Write(msg))
                 break;
@@ -121,13 +127,23 @@ public:
         size_t size = 0; // debug
         file << msg.b();
         size += msg.b().size(); // debug
+        // int count(0);
         while (reader->Read(&msg)) {
+            // if (count == 5) {
+            //     std::cout << "server crashes during receiveing file from client\n";
+            //     assert(false);
+            // }
+            // ++count;
             file << msg.b();
             size += msg.b().size(); // debug
         }
         file.close();
         pthread_mutex_unlock(&lock);
-        std::cout << "[log] Write received " << size << " bytes of data.\n";
+        std::cout << "[log] Write: received " << size << " bytes of data.\n";
+        if (context->IsCancelled()) {
+            std::cout << "[log] Write: Client cancelled the operation! I don't change the file.\n";
+            return Status::CANCELLED;
+        }
         struct stat sb;
         stat(filepath.c_str(), &sb);
         std::string ts(reinterpret_cast<char *>(&sb.st_mtim), sizeof(sb.st_mtim));
@@ -135,6 +151,7 @@ public:
         
         rename(getServerFilepath(msg.filepath(), true).c_str(), getServerFilepath(msg.filepath(), false).c_str());
 
+        std::cout << "[log] Write: finish rename() the file.\n";
         return Status::OK;
     }
     Status Stat(::grpc::ServerContext* context, const ::cs739::Filepath* request, ::cs739::StatContent* response){
