@@ -369,6 +369,9 @@ int afs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offse
 
 int afs_open(const char *path, struct fuse_file_info *fi)
 {
+    struct timespec t, u;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    std::cout << "[log] afs_open: start\n";
     std::string path_str(path);
     Filepath filepath;
     filepath.set_filepath(path_str);
@@ -392,12 +395,15 @@ int afs_open(const char *path, struct fuse_file_info *fi)
 
         if ( stat_content.st_mtim() == AFS_DATA->last_modified.get(path_str)) {
             // can use cache
+            std::cout << "[log] afs_open: can use local cache\n";
             fi->fh = open(cachepath(path).c_str(), fi->flags);
             if (fi->fh < 0) {
+                std::cout << "[err] afs_open: failed to open cache file\n";
                 return -errno;
             }
-            std::cout << "hash path: " << cachepath(path).c_str() << std::endl;
-            std::cout << "[log] afs_open: can use local cache\n";
+            clock_gettime(CLOCK_MONOTONIC, &u);
+            std::cout << "[log] afs_open: end. took " << 
+                      ((u.tv_sec - t.tv_sec) * 1000000000 + (u.tv_nsec - t.tv_nsec)) << "ns.\n";
             return 0;
         }
         else {
@@ -408,13 +414,14 @@ int afs_open(const char *path, struct fuse_file_info *fi)
     }
     
     // get file from server, or create a new one
+    std::cout << "[log] afs_open: start downloading from server." << std::endl;
     MetaContent msg;
     ClientContext context;
     set_deadline(context);
     std::unique_ptr<ClientReader<MetaContent>> reader(
         AFS_DATA->stub_->GetContent(&context, filepath));
     if (!reader->Read(&msg)) {
-        std::cout << "[log] afs_open: failed to download from server." << std::endl;
+        std::cout << "[err] afs_open: failed to download from server." << std::endl;
         return -EIO;
     }
     if (msg.file_exists()) {
@@ -429,17 +436,17 @@ int afs_open(const char *path, struct fuse_file_info *fi)
 
         Status status = reader->Finish();
         if (!status.ok()) {
-            std::cout << "[log] afs_open: failed to download from server." << std::endl;
+            std::cout << "[err] afs_open: failed to download from server." << std::endl;
             return -EIO;
         }
         ofile.close(); // the cache is persisted
         
         AFS_DATA->last_modified.set(path_str, msg.timestamp());
         // writeMapIntoFile();
-        std::cout << "[log] afs_open: downloaded from server\n";
+        std::cout << "[log] afs_open: finish download from server\n";
     }
     else {
-        std::cout << "[log] afs_open: create a new one\n";
+        std::cout << "[log] afs_open: create a new file\n";
         AFS_DATA->last_modified.set(path_str, LOCAL_CREAT_FILE);
         // writeMapIntoFile();
         close(creat(cachepath(path).c_str(), 00777));
@@ -450,19 +457,24 @@ int afs_open(const char *path, struct fuse_file_info *fi)
 
     // give user the file
     fi->fh = open(cachepath(path).c_str(), fi->flags);
-    if (fi->fh < 0)
+    if (fi->fh < 0) {
+        std::cout << "[err] afs_open: error open downloaded cache file.\n";
         return -errno;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &u);
+    std::cout << "[log] afs_open: end. took " << 
+                ((u.tv_sec - t.tv_sec) * 1000000000 + (u.tv_nsec - t.tv_nsec)) << "ns.\n";
     return 0;    
 }
 
 int afs_release(const char *path, struct fuse_file_info *fi)
 {
+    struct timespec t, u;
+    clock_gettime(CLOCK_MONOTONIC, &t);
     std::cout << "[log] afs_release start\n";
     close(fi->fh);
     if (AFS_DATA->is_dirty.get(path)) {
         std::cout << "[log] afs_release dirty file. upload\n";
-        struct timespec t, u;
-        clock_gettime(CLOCK_MONOTONIC, &t);
         Meta meta;
         FilepathContent content;
         ClientContext context;
@@ -497,19 +509,23 @@ int afs_release(const char *path, struct fuse_file_info *fi)
             AFS_DATA->last_modified.set(std::string(path), meta.timestamp());
             // writeMapIntoFile();
         } else {
-            std::cerr << status.error_code() << ": " << status.error_message() << std::endl;
+            std::cout << "[log] afs_release: error during upload:\n"; // took " << 
+            std::cout << "[log]              " << status.error_code() << ": " << status.error_message() << std::endl;
             return EIO;
         }
-        clock_gettime(CLOCK_MONOTONIC, &u);
 
+        clock_gettime(CLOCK_MONOTONIC, &u);
         // AFS_DATA->last_modified.print_table();
         std::cout << "[log] afs_release: dirty file upload finished. took " << 
         ((u.tv_sec - t.tv_sec) * 1000000000 + (u.tv_nsec - t.tv_nsec)) << "ns.\n";
         return 0;
     }
     else {
-        std::cout << "[log] afs_release: clean file. direct return.\n";
+        clock_gettime(CLOCK_MONOTONIC, &u);
+        std::cout << "[log] afs_release: clean file. direct return. took " << 
+        ((u.tv_sec - t.tv_sec) * 1000000000 + (u.tv_nsec - t.tv_nsec)) << "ns.\n";
         return 0;
+
     }
 }
 
