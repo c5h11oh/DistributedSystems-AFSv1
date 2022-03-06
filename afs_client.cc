@@ -381,7 +381,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
             if (fi->fh < 0) {
                 return -errno;
             }
-            std::cout << "is locally created file\n";
+            std::cout << "[log] afs_open: is locally created file\n";
             return 0;
         }
         
@@ -397,7 +397,7 @@ int afs_open(const char *path, struct fuse_file_info *fi)
                 return -errno;
             }
             std::cout << "hash path: " << cachepath(path).c_str() << std::endl;
-            std::cout << "can use local cache\n";
+            std::cout << "[log] afs_open: can use local cache\n";
             return 0;
         }
         else {
@@ -413,7 +413,10 @@ int afs_open(const char *path, struct fuse_file_info *fi)
     set_deadline(context);
     std::unique_ptr<ClientReader<MetaContent>> reader(
         AFS_DATA->stub_->GetContent(&context, filepath));
-    reader->Read(&msg);
+    if (!reader->Read(&msg)) {
+        std::cout << "[log] afs_open: failed to download from server." << std::endl;
+        return -EIO;
+    }
     if (msg.file_exists()) {
         // open file with O_TRUNC
         std::ofstream ofile(cachepath(path),
@@ -423,13 +426,20 @@ int afs_open(const char *path, struct fuse_file_info *fi)
         while (reader->Read(&msg)) {
             ofile << msg.b();
         }
+
+        Status status = reader->Finish();
+        if (!status.ok()) {
+            std::cout << "[log] afs_open: failed to download from server." << std::endl;
+            return -EIO;
+        }
         ofile.close(); // the cache is persisted
+        
         AFS_DATA->last_modified.set(path_str, msg.timestamp());
         // writeMapIntoFile();
-        std::cout << "download from server\n";
+        std::cout << "[log] afs_open: downloaded from server\n";
     }
     else {
-        std::cout << "create a new one\n";
+        std::cout << "[log] afs_open: create a new one\n";
         AFS_DATA->last_modified.set(path_str, LOCAL_CREAT_FILE);
         // writeMapIntoFile();
         close(creat(cachepath(path).c_str(), 00777));
@@ -479,6 +489,9 @@ int afs_release(const char *path, struct fuse_file_info *fi)
         file.close();
 
         Status status = writer->Finish();
+        // int pause;
+        // std::cout << "release crash point (after uploding data)\n";
+        // std::cin >> pause;
         if (status.ok()) {
             AFS_DATA->is_dirty.set(path, false); // now the copy is "clean"
             AFS_DATA->last_modified.set(std::string(path), meta.timestamp());
