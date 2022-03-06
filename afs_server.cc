@@ -118,12 +118,16 @@ public:
             Status s(StatusCode::NOT_FOUND, "Cannot open file");
             return s;
         }
+        size_t size = 0; // debug
         file << msg.b();
+        size += msg.b().size(); // debug
         while (reader->Read(&msg)) {
             file << msg.b();
+            size += msg.b().size(); // debug
         }
         file.close();
         pthread_mutex_unlock(&lock);
+        std::cout << "[log] Write received " << size << " bytes of data.\n";
         struct stat sb;
         stat(filepath.c_str(), &sb);
         std::string ts(reinterpret_cast<char *>(&sb.st_mtim), sizeof(sb.st_mtim));
