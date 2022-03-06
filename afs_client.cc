@@ -247,7 +247,7 @@ public:
     }
 
     std::size_t count(std::string filename) {
-        return table.count(filename);
+        return table.count(hashpath(filename.c_str()));
     }
 
     std::size_t size() {
