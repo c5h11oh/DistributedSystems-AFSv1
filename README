@@ -1,0 +1,75 @@
+1. Functionality and Correctness
+1.1 Posix Compliance
+	- all system calls are implemented through FUSE's operations. They are all in `afs_client.cc`. FUSE operations are functions called `afs_XXX()`.
+	- Some system calls require interactions with the server, and we use gRPC calls to implement that. The prcedure call signatures are defined as proto in `protos/afs.proto`.
+	- FUSE operations:
+		- afs_readdir() : afs_client.cc:353
+		- afs_open() : afs_client.cc:371
+		- afs_release() : afs_client.cc:471
+		- afs_fsync() : afs_client.cc:550
+		- afs_mknod() : afs_client.cc:558
+		- afs_unlink() : afs_client.cc:605
+		- afs_getattr() : afs_client.cc:627
+		- afs_mkdir() : afs_client.cc:656
+		- afs_rmdir() : afs_client.cc:672
+		- afs_read() : afs_client.cc:688
+		- afs_write() : afs_client.cc:696
+		- afs_truncate() : afs_client.cc:715
+	- Posix calls to FUSE operation mapping:
+		- open(): afs_getattr(), afs_open()
+		- close(): afs_release()
+		- creat(): afs_mknod()
+		- unlink(): afs_getattr(), afs_unlink()
+		- mkdir(): afs_mkdir()
+		- rmdir(): afs_rmdir()
+		- read() & pread(): afs_read()
+		- write() & pwrite(): afs_write(), afs_truncate()
+		- stat(): afs_getattr()
+		- fsync(): afs_fsync()
+		- readdir(): afs_readdir()
+1.2 AFS Protocol and Semantics
+	- Interface between client and server: see `protos/afs.proto`
+		- GetMeta(Filepath) returns(Meta): obsolete. see Stat()
+		- GetContent(Filepath) returns(stream MetaContent): getting the file content
+		- Ls(Filepath) returns(LsResult): getting the directory content (only gives `d_name`, as it is the only thing required by FUSE)
+		- Write(stream FilepathContent) returns(Meta): update the file content
+		- Stat(Filepath) returns(StatContent): getting the attribute of file (stat())
+		- Unlink(Filepath) returns(Response): unlink() file
+		- Rmdir(Filepath) returns(Response): remove directory
+		- Mkdir(Filepath) returns(Response): create directory
+	- Client whole file cache: 
+		- see implementations of afs_open() and afs_close(). 
+		- open the file after downloaded whole file in cache.
+		- on close(), write to server and get the timestamp from server.
+		- a persisted state "is_dirty" is maintained so that client only uploads when cache is dirty. 
+			- presented as C++ class "is_dirty_t" (afs_client.cc:59). persisted on set() and erase() operations.
+		- client rechecks the validility of cache (compare local cache & server file's timestamp) whenever user open() the file.
+	- Update visibility
+		- fsync() writes to local cache -- processes on the same client machine can see changes. processes on other machines cannot.
+		- close() writes to server -- all other clients see changes.
+		- last writer wins
+			- on successful write on server, server atomically rename() the written file to the actual location (afs_server.cc:152)
+			- so, no mixing write can occur.
+	- Stale cache
+		- local cache's timestamps are stored as persisted states and present as C++ class "last_modified_t". see afs_client.cc:169. persisted on set() and erase() operations.
+		- on each open(), client checks the local cache's timestamp with the server (RPC Stat()). 
+		- Client only uses cache if timestamps match. see afs_client.cc:397.
+1.3 Durability
+	- Client-side FUSE-based file system is crash consistent.
+		- cache file "is_dirty" and "last_modified" state is persisted. Client can therefore distinguish if cache is up-to-date & dirty after recovery.
+		- No content corruption: Assuming a single block write is atomic. Get this guarantee by putting client cache in ext4 mounted with `data=journal` option.
+		- See `deploy/g1m-client-run-cmds.txt` to see commands to build cache directory.
+	- Server side persistence:
+		- Write to cache folder first, and on successful write, atomically move the file to actual file system by rename().
+		- See RPC Write() implementation in afs_server.cc:152
+1.4 Crash Recovery Protocol
+	- Client crash
+		- persisted "last_modified" state can be used to check with server whether the cache is still the latest.
+		- ext4 journal ensures our modifications to a block is either done or no effect.
+		- persisted "is_dirty" state can let client know if a user opens and closes such valid dirty cache, whether client has to upload the content to server.
+	- Server crash
+		- Clients will get an I/O error when server is down. (e.g. afs_client.cc:426)
+		- Every updates on server is atomic via [ writing to cache file first + atomic rename() ]. (afs_server.cc:152)
+		- No special operations required on recovery.
+
+2. Measurement: see report.pdf
