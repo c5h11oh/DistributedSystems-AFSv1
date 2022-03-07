@@ -33,6 +33,7 @@ using grpc::Status;
 using grpc::StatusCode;
 using namespace cs739;
 
+#define FAILURE_POINT 3
 #define PATH_MAX 4096
 #define BUFSIZE 65500
 #define AFS_DATA ((struct afs_data_t *) fuse_get_context()->private_data)
@@ -487,10 +488,23 @@ int afs_release(const char *path, struct fuse_file_info *fi)
             exit(1);
         }
         std::string buf(BUFSIZE, '\0');
+#if FAILURE_POINT != 0
+        std::cout << "[fai] failure enabled!\n";
+#endif
+#if FAILURE_POINT == 1
+        int failure_countdown = 10;
+#endif
         while (file.read(&buf[0], BUFSIZE)) {
             content.set_b(buf);
             if (!writer->Write(content))
                 break;
+#if FAILURE_POINT == 1
+            --failure_countdown;
+            if (failure_countdown == 0) {
+                std::cout << "[fai] killing itself during upload...\n";
+                assert(false);
+            }
+#endif
         }
         if (file.eof()) {
             buf.resize(file.gcount());
@@ -501,6 +515,10 @@ int afs_release(const char *path, struct fuse_file_info *fi)
         file.close();
 
         Status status = writer->Finish();
+#if FAILURE_POINT == 2
+        std::cout << "[fai] killing itself after upload finish...\n";
+        assert(false);
+#endif
         // int pause;
         // std::cout << "release crash point (after uploding data)\n";
         // std::cin >> pause;
@@ -785,6 +803,9 @@ int main(int argc, char *argv[])
     if (afs_data->cache_root.back() != '/') { afs_data->cache_root += '/'; }
     // afs_data->last_modified = readFileIntoMap(cache_root);
     std::cout<<"[STARTUP-------------------]"<< afs_data->last_modified.size() <<"\n"; 
+#if FAILURE_POINT != 0
+    std::cout << "[fai] failure enabled!" << std::endl;
+#endif
 
     afs_oper.getattr    = afs_getattr;
     afs_oper.mknod      = afs_mknod;
