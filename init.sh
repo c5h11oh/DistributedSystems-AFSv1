@@ -15,7 +15,7 @@ echo "set tabstop=4" > ~/.vimrc
 
 # git
 git config --global user.name "Sven Hwang"
-git config --global user.email "sven.chwen@gmail.com"
+git config --global user.email "deleted"
 
 echo "[adding repo deploy key]"
 echo "deleted"> ~/.ssh/id_cs739_afsv1_deploy_key.pub
