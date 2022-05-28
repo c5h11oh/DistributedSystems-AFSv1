@@ -18,14 +18,8 @@ git config --global user.name "Sven Hwang"
 git config --global user.email "sven.chwen@gmail.com"
 
 echo "[adding repo deploy key]"
-echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIWkwKvGF4Qmg0ZNFgQTZwcv5pdREjezPQ66RXJsYMLS sven.chwen@gmail.com"> ~/.ssh/id_cs739_afsv1_deploy_key.pub
-echo -e "-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACCFpMCrxheEJoNGTRYEE2cHL+aXURI3sz0OukVybGDC0gAAAJiyCmN7sgpj
-ewAAAAtzc2gtZWQyNTUxOQAAACCFpMCrxheEJoNGTRYEE2cHL+aXURI3sz0OukVybGDC0g
-AAAEBxwXYCyXgmFF7cVb/4MfG9Up9YMqU0p3nHCQSc5lrLGYWkwKvGF4Qmg0ZNFgQTZwcv
-5pdREjezPQ66RXJsYMLSAAAAFHN2ZW4uY2h3ZW5AZ21haWwuY29tAQ==
------END OPENSSH PRIVATE KEY-----" > ~/.ssh/id_cs739_afsv1_deploy_key
+echo "deleted"> ~/.ssh/id_cs739_afsv1_deploy_key.pub
+echo -e "deleted" > ~/.ssh/id_cs739_afsv1_deploy_key
 chmod 0600 ~/.ssh/id_cs739_afsv1_deploy_key
 eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/id_cs739_afsv1_deploy_key
